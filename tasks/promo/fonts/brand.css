@@ -1,0 +1,140 @@
+/* promo 任务自带的排版字体 —— 离线可用：渲染时不联网，也不要求本机装过这些字体。
+ * 想用就取消注释 →  task.config.mjs 里写：  fonts: './fonts/brand.css',
+ *
+ * 文件名                         字节数    来源 / 许可证
+ * ---------------------------------------------------------------------------------
+ * inter-latin-400.woff2          23 664   Inter Regular      · SIL OFL 1.1
+ * inter-latin-600.woff2          24 452   Inter SemiBold     · SIL OFL 1.1
+ * inter-latin-800.woff2          24 400   Inter ExtraBold    · SIL OFL 1.1
+ *   @fontsource/inter@5.3.0（latin 子集，230 码位）
+ *   https://cdn.jsdelivr.net/npm/@fontsource/inter/files/inter-latin-400-normal.woff2
+ *   https://cdn.jsdelivr.net/npm/@fontsource/inter/files/inter-latin-600-normal.woff2
+ *   https://cdn.jsdelivr.net/npm/@fontsource/inter/files/inter-latin-800-normal.woff2
+ *   Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
+ *
+ * ibm-plex-mono-latin-400.woff2  14 708   IBM Plex Mono Regular   · SIL OFL 1.1
+ * ibm-plex-mono-latin-600.woff2  15 620   IBM Plex Mono SemiBold  · SIL OFL 1.1
+ *   @fontsource/ibm-plex-mono@5.3.0（latin 子集，229 码位）
+ *   https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2
+ *   https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2
+ *   Copyright 2017 IBM Corp. All rights reserved.
+ *
+ * noto-sans-sc-subset.woff2      28 796   Noto Sans SC · SIL OFL 1.1 · 中文，只含 103 个字
+ *   可变字体（wght 轴 100–900），Google Fonts CSS2 API 的 text= 子集（未改字形）：
+ *   https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=block&text=<103 个字的 URL 编码>
+ *   版权：Copyright 2014-2021 Adobe (http://www.adobe.com/)，保留字体名 'Source'
+ *   （本文件未使用保留字体名，也未修改字形，只是把码位裁到用得到的那几个）
+ *
+ * 许可证全文（三款同为 SIL Open Font License 1.1，允许商用/嵌入/再分发，
+ * 要求：保留版权与许可声明；派生版本不得使用保留字体名）：
+ *   https://scripts.sil.org/OFL   ·   https://openfontlicense.org
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 场景里字体族名怎么写（src/core/text.js 的 FAMILIES[family] ?? family）
+ *
+ * 引擎的 sans 槽位第一个是 'Archivo'（本任务没提供），所以 family: 'sans' 的**拉丁字**
+ * 会一路回退到微软雅黑 —— 想要标题排版，直接把整串 CSS 字体栈传进去：
+ *
+ *   标题（拉丁走 Inter，汉字走 Noto Sans SC 子集）：
+ *     family: "'Inter', 'Noto Sans SC', 'Microsoft YaHei', sans-serif"
+ *   代码 / 标签 / 时间码：
+ *     family: "'IBM Plex Mono', 'Consolas', monospace"
+ *     也可以直接写 family: 'mono' —— 引擎 mono 槽位第一个就是 'IBM Plex Mono'，现在真有了
+ *
+ * weight 直接给数字：400 / 600 / 800（Inter 三档都是真文件，不会拿伪粗体糊）。
+ * 中文的 700 / 800 也是真字形 —— Noto Sans SC 是可变字体，wght 轴 100–900。
+ *
+ * ⚠ 中文子集**只有下面这 103 个字**，不在这份清单里的汉字会掉回微软雅黑，
+ *   一行里就会混出两种字形。要加新词就重新取一次子集（见文件末尾说明）。
+ *   ·—‘’“”…、。〈〉《》「」『』【】一与个代以任传何做像再写几出函动可器图型头字定宣导就己
+ *   帧幕引性意成扩擎改散数旁时是有材来染模每没渲片由画白的看真着码确算糊素纯编自致色视览
+ *   运逐都镜间预频！％（），：；？
+ *   拉丁字母/数字不在中文字体里（那是 Inter / IBM Plex Mono 的事），靠字体栈逐字回退即可。
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * ⚠ 加载时机（踩坑预警，写片子前先读这段）
+ *
+ * `fonts: './fonts/brand.css'` 这条路，src/app.js 的 loadTaskFonts() 只会
+ * await 样式表 onload + document.fonts.ready；而 document.fonts.ready **不会**
+ * 等一个「已声明但还没被用上」的 @font-face —— 于是首帧很可能还是回退字体
+ * （源码 46-47 行的注释说的就是这个「拍到方框」）。
+ *
+ * 想拿到「第一帧之前一定加载完」的硬保证，用**数组形式**列出文件：
+ * loadTaskFonts() 对这种写法会额外调用 document.fonts.load('400 64px "Inter"', 'Aa动画')
+ * 并 await 它（src/app.js:94-98），那才是真的强制下载。
+ *
+ *   // task.config.mjs —— 推荐：首帧一定拿得到真字体
+ *   fonts: [
+ *     { file: './fonts/inter-latin-400.woff2',        family: 'Inter',         weight: '400' },
+ *     { file: './fonts/inter-latin-600.woff2',        family: 'Inter',         weight: '600' },
+ *     { file: './fonts/inter-latin-800.woff2',        family: 'Inter',         weight: '800' },
+ *     { file: './fonts/ibm-plex-mono-latin-400.woff2', family: 'IBM Plex Mono', weight: '400' },
+ *     { file: './fonts/ibm-plex-mono-latin-600.woff2', family: 'IBM Plex Mono', weight: '600' },
+ *     { file: './fonts/noto-sans-sc-subset.woff2',    family: 'Noto Sans SC',  weight: '100 900' },
+ *   ],
+ *
+ * 这个文件本身照样有用：它是给人看的事实来源，也是 'fonts: ./fonts/brand.css' 那条路的声明。
+ *
+ * 另外：下面**故意不写 local(...)**。写了的话，本机装过别的版本 Inter 的机器会优先用本机那份，
+ * 同一份代码在不同机器上字形就不一样了 —— 这个引擎卖的就是「预览与成片逐像素一致」，
+ * 字体必须钉死在这几个文件上。font-display: block 同理（离屏截帧时字体没就绪会被拍到方框）。
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./inter-latin-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./inter-latin-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./inter-latin-800.woff2') format('woff2');
+  font-weight: 800;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('./ibm-plex-mono-latin-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('./ibm-plex-mono-latin-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+/* 中文：单个可变字体文件，一行声明就把 100–900 全档都覆盖了。
+ * 必须写成范围 `100 900` —— 只写 400 的话，weight: 700 会拿 400 的字形去伪粗体。 */
+@font-face {
+  font-family: 'Noto Sans SC';
+  src: url('./noto-sans-sc-subset.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
+/* 想给中文字体换一批字（比如字幕里出现了新词）：
+ *   1. 把要覆盖的字拼成一个字符串；
+ *   2. 请求 https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=block&text=<URL 编码后的字符串>
+ *      （用现代 Chrome 的 User-Agent，拿到的 src 就是 fonts.gstatic.com 上的 woff2 子集）；
+ *   3. 下载那个 woff2 覆盖 noto-sans-sc-subset.woff2，本文件不用改。
+ * 子集只裁码位、不动字形，1000 个常用汉字大约 400–600 KB，仍远小于整份的十几 MB。 */

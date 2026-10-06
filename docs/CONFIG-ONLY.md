@@ -1,0 +1,367 @@
+# CONFIG-ONLY.md —— 零代码出片（B 档：整支片子只有 `task.config.mjs`）
+
+> **一句话**：当你要的画面能用 `src/shots/` 里那 8 个镜头模板的参数说清楚时，
+> 时间线的每一项就直接写模板名 —— `{ type: 'chart', values: […], dur: 5 }` ——
+> 任务目录里**只有 `task.config.mjs`，没有 `scenes/`，一个 `import` 都不用写**。
+>
+> 术语（与 [`docs/ROADMAP.md`](./ROADMAP.md) §2 一致）：
+> **A 档** = 镜头库 `src/shots/`（`shot('名字', {…})` 一行取一个整镜头）；
+> **B 档** = 配置档，也就是本文（时间线直接写 `{ type: '名字' }`，由 `build()` 查表分发）；
+> **C 档** = 手写场景（模板覆盖不到的新视觉）。
+>
+> 配套的完整示例任务是 `tasks/example-config-only/`（同样只有 `task.config.mjs`，无音频）。
+> 它和本文是同一批落地的：`node scripts/anim.mjs tasks` 列得出它就直接照它抄，
+> 列不出来就以本文 §2 的骨架为准。
+
+---
+
+## 1. 一句话：什么时候只用配置，什么时候不行
+
+| 你要的东西 | 走哪条路 |
+|---|---|
+| 8 个模板能表达的画面（标题 / 柱状图 / 动态大字 / 甩镜 / 片尾 / 波形 / 同心圆 / 频谱网格） | **只写 `task.config.mjs`**（本文） |
+| 段落顺序、每段时长、段间重叠（转场）、模板参数、配色、帧率与分辨率、选哪条音乐 | 同上 —— 这些本来就是配置 |
+| 模板覆盖不到的新视觉（raymarch 晶格、燃烧的引线、钞票团花…） | **回去写场景代码**：`AGENTS.md` §3（场景长什么样）、`docs/COOKBOOK.md`（做法手册），也就是 C 档 |
+
+判据只有一条：**这个画面能不能用某个模板的参数说清楚？** 能，就写配置；不能的那一段写场景，
+其余段落照旧用模板 —— 模板返回的就是普通场景对象，两种写法能混在同一条时间线里
+（`src/shots/index.js`）。配置档省掉的是**场景代码**，不是"看图"这一步。
+
+⚠ **零代码 ≠ 零检查。** 出片流程一个字都没变：`check` → `still` → **用 Read 工具看那些 PNG** → `video`
+（`AGENTS.md` §1）。不出图看就调画面，跟手写场景时一样是盲改。
+
+---
+
+## 2. 最小可跑的例子
+
+一个完整的任务只需要一个文件：
+
+```
+tasks/我的片子/
+  task.config.mjs        ← 就这一个
+```
+
+```js
+// tasks/我的片子/task.config.mjs —— 没有 import，也不需要 scenes/
+export default {
+  title: '我的片子',
+  width: 1920, height: 1080, fps: 60, scale: 1,   // 这四个都有默认值，就是这里写的这些
+  palette: { signal: '#00e0ff' },                 // 可选：覆盖默认调色板的强调色
+  timeline: [
+    { type: 'title', title: '我的片子', sub: '副标题', dur: { beat: 8 } },
+    { type: 'chart', values: [0.3, 0.7, 0.95], title: '成绩', dur: 5 },
+    { type: 'outro', title: '完', dur: 3 },
+  ],
+};
+```
+
+三条命令：
+
+```sh
+node scripts/anim.mjs check 我的片子            # 体检：静态扫描 + 逐段试渲染 + 亮度/背景守门 + 印出时间线
+node scripts/anim.mjs still 我的片子 -t 1,6,9   # 出单帧 PNG → out/我的片子/stills/f_0001.000.png …
+node scripts/anim.mjs video 我的片子            # 出成片 → out/我的片子/我的片子.mp4
+```
+
+产物都落在 `out/<任务>/`：
+
+| 命令 | 产物 |
+|---|---|
+| `still` | `out/<任务>/stills/f_<时刻>.png`（`-t 9.5` → `f_0009.500.png`） |
+| `sheet` | `out/<任务>/sheet_<from>-<to>.png`（一张接触表看一段运动） |
+| `shot` | `out/<任务>/shot_<from>-<to>.mp4`（无音轨短预览） |
+| `video` | `out/<任务>/<任务>.mp4`（配了 `audio` 就带音轨；收尾时 CLI 自己用 ffprobe 复核帧数） |
+
+`still`/`sheet` 的 `-t`、`--from/--to` 都是**整片时间**（不是段内时间）——例外是 `--only a,b`，
+它会把选中的段平移到时间轴开头，那时 `-t` 才是段内时间（`AGENTS.md` §7）。
+
+`task.config.mjs` 里能写的东西（`src/tasks.js` 的 `TaskSpec`）：
+
+| 字段 | 意思 |
+|---|---|
+| `title` | 片子名（HUD 里显示；与模板参数 `title` 是两件事） |
+| `width` `height` `fps` `scale` | 逻辑分辨率、帧率、输出倍率（`scale: 2` = 真 4K），默认 `1920 / 1080 / 60 / 1` |
+| `palette` | 覆盖调色板（键见 `src/core/palette.js`：`ink` `bone` `signal` `ember` …）。**8 个模板的强调色都取自 `signal`**，改它会整片换色 |
+| `audio` | 音乐（相对任务目录）。需要音乐的模板（§7）必须配它 |
+| `fonts` | 任务自带字体（`.css` 或字体文件），相对任务目录 |
+| `duration` | 总时长；不写 = 时间线最后一个 `end` |
+| `narration` | 旁白句子表（内联对象或 json 路径），配合 `dur: { vo }`；细节见 `docs/NARRATION.md` |
+| `timeline` | **时间线**：数组，或 `seq([...])`（见 `AGENTS.md` §3） |
+
+> 新建任务目录后：用 CLI 渲染**不需要**重启任何东西；`npm run dev` 的预览服务需要重启一次才看得到新任务
+> （`src/tasks.js` 的提示语）。
+
+---
+
+## 3. 节点字段表：哪些键是时间线的，哪些键是模板参数
+
+时间线的每一项 = 一个对象。**属于时间线的键只有这 12 个**（`src/timeline.js` 的 `TIMELINE_KEYS`）：
+
+| 字段 | 意思 |
+|---|---|
+| `type` | **模板名**（8 个之一）。必填；写了 `type` 且没有 `scene` 才是"配置档节点" |
+| `id` | 段名。不写 = 模板自己的默认段名（`title` / `chart` / …）；重复时自动加 `_2`。`--only`、HUD、报错里都用它 |
+| `dur` | 段长（§5 的四种写法）。**不写 = 4 秒** |
+| `at` | 绝对起点；不写 = 接在上一段之后（再减去 `overlap`）。也接受拍号 |
+| `overlap` | 与**上一段**重叠多少秒 = 转场；不写 = 0（硬切） |
+| `params` | 显式写模板参数。与节点上的散键合并，**`params` 优先** |
+| `post` | 这一帧的后处理参数（`AGENTS.md` §5 那张表）。⚠ 模板自己 `render()` 里 `return` 的 post 会盖过同名的键 |
+| `maxSamples` | 这一段自适应子帧数的**上限**（引擎取所有在播段里最小的那个，`src/core/engine.js`） |
+| `handlesTransition` | 这一段自己处理与上一段的衔接（`whip` 模板自带，一般不用写） |
+| `note` | 备注，只印在 `check` 的时间线表里，不影响画面 |
+| `world` / `worldPass` | 共享背景：`world: 'auto'`（= 用 `task.world`）、`worldPass: true` 同义。**配置档用不到**，见 §6 |
+
+**其余所有键都是模板参数**，会被原样交给 `shot(type, {…})`：
+
+```js
+{ type: 'chart', values: [0.3, 0.7, 0.95], title: '成绩', dur: 5 }   // 散键写法
+{ type: 'chart', params: { values: [0.3, 0.7, 0.95] }, dur: 5 }      // 显式写法，等价
+```
+
+### 写错会怎样：抛错，并点名
+
+这是刻意的设计 —— 镜头库的注释里写着理由：这个引擎最贵的 bug 全是"**写错了但画面照样出**"
+（`src/shots/index.js`、`docs/IMPROVEMENTS-2.md`）。下面四条是从 `src/tasks.js` → `src/timeline.js`
+（`configToCut`）→ `src/shots/index.js`（`shot`）三层包装后的**真实报错形状**，只有"写错的那个名字"是举例：
+
+**① 模板名写错** —— `{ type: 'chart2', dur: 5 }`：
+
+```
+tasks/我的片子/task.config.mjs 的时间线不合法：
+timeline[0] 这一段（type: "chart2"）取不到镜头模板：
+  未知的镜头模板 "chart2"。可用的：title / chart / kinetic / whip / outro / wave / pulse / grid（看参数：node scripts/anim.mjs shots <名字>）
+```
+
+**② 参数名拼错** —— `{ type: 'chart', value: [0.3, 0.7], dur: 5 }`（少个 `s`）：
+
+```
+tasks/我的片子/task.config.mjs 的时间线不合法：
+timeline[0] 这一段（type: "chart"）取不到镜头模板：
+  镜头模板 "chart" 没有参数 "value"（大概是拼错了）。可用参数：id / values / title / sub / footer / peak
+```
+
+**③ 时间线字段名拼错也会被抓**，走的是同一条路 —— 因为它不属于那 12 个键，会被当模板参数交出去：
+`{ type: 'title', durs: 5 }` → `镜头模板 "title" 没有参数 "durs"（大概是拼错了）。可用参数：id / eyebrow / title / sub / readout`。
+
+**④ 配置档节点和"已经展开好的段"混写** —— 后者指带 `scene` 和数字 `start`/`end` 的对象
+（例如把 `build()` 的产物又塞回时间线）：
+
+```
+时间线里不能混写「配置档节点」和「已经展开好的段」：
+  · 配置档节点 = { type: 'chart', values: […], dur: 5 }（要由 build() 排时间）；
+  · 展开好的段 = { id, scene, start, end, … }（绝对时间是有意义的）。
+  build() 会把后者也当成一个节点重新排，它的 start/end 就被静默丢掉了。
+  → 统一成一种写法：都写配置档，或者都写 cut()/seq()。
+```
+
+（前面还会带一行 `tasks/<任务>/task.config.mjs 的时间线不合法：`。）
+注意：配置档节点**可以**和 `cut(scene, {…})` 混在一条时间线里 —— 那是"模板镜头 + 手写场景"，
+是支持的用法；被拒绝的只有"已经展开好的段"。
+
+---
+
+## 4. 8 个模板一览
+
+| 名字 | 画什么 | 主要参数 | 要音乐吗 |
+|---|---|---|---|
+| `title` | 大标题入场：眉标逐字打出 + 主标题逐字上浮 + 一条生长的横线与刻度 | `title` `sub` `eyebrow` `readout` | 不用 |
+| `chart` | 柱状图逐条生长：坐标轴 + 排线柱体 + 扫描线与跟随读数 | `values` `title` `sub` `footer` `peak` | 不用 |
+| `kinetic` | 动态大字 + GLSL 背景 + 左下角滚动的计数器阵列 | `headline`(见下) `sub` `cellCols` `cellRows` `cellSeed` | 不用 |
+| `whip` | 甩镜转场：把上一段的成帧甩走 + 斜向速度线 + 震屏 | `streaks` `dir` | 不用 |
+| `outro` | 片尾：从两侧收拢的细线与刻度 + 标题落位 + 最后 0.6 秒压黑 | `title` `sub` `signature` | 不用 |
+| `wave` | 波形：以当前时刻为右端的历史窗口，逐列画包络竖线 + kick 横线 | `label` `cols` `window` | **要** |
+| `pulse` | 同心圆：8 圈从最近 8 个拍点扩出去，中心方块跟低频呼吸 | `title` | **要** |
+| `grid` | 频谱网格：每列一个频段，按包络高度点亮格子 + 扫描线 | `label` `cols` `rows` `window` | **要** |
+
+- **没有"必需参数"**：每个模板的每个参数都有默认值，什么都不传就是它自己的默认画面。
+- 参数的类型、默认值、说明，以及每个模板的注意事项，**唯一权威**是：
+
+  ```sh
+  node scripts/anim.mjs shots            # 8 个模板的名字与一句话
+  node scripts/anim.mjs shots chart      # 某一个模板的全部参数 + 类型 + 默认值 + 说明
+  ```
+
+- 每个模板都有 `id`（段名）。`id` 也可以写在节点顶层（时间线字段），效果一样。
+
+**几个"名字在表里、语义没写"的参数**（写错了不报错，只是画面悄悄变弱）：
+
+| 参数 | 默认 | 要知道的事 |
+|---|---|---|
+| `chart.peak` | `0.95` | 判"最高那根"的阈值：`>= peak` 的柱子才用**信号色 + 顶端小帽**。**你的 `values` 上界低于它 → 整张图没有强调色**。换量纲时写成 `peak: Math.max(...values)` |
+| `whip.dir` | `[1, 0.12]` | 甩的**方向**（uv 空间：`x` 正 = 内容被带向画面右，`y` 正 = 向下）。**连续两段甩镜要反向**（`[1,0.12]` → `[-1,-0.08]`）；`streaks: 0` 只留方向性模糊 |
+| `title.readout` | `true` | 右下角那个随时间走的 `NNN%` 读数，是 demo 的演示元件 —— **正片一般写 `readout: false`** |
+| `kinetic.cellCols` / `cellRows` | `8` / `5` | 左下计数器阵列的列/行数，每格 26×26 逻辑像素、从 (60,60) 起算 —— 调大就铺满下半屏 |
+| `wave.window` | `1.2` | 只管**波形竖线**的窗口；kick 横线固定查 `t-2.2..t`，与它无关 |
+
+三条"参数没写错、但会画错"的规则（都在 `anim shots <名字>` 的说明里）：
+
+- `kinetic` 的 `headline` **必须正好两个元素**（两行大字，多给少给都会画错）。
+- `whip` 是**转场镜头**：它要放在与上一段有 `overlap` 的位置才拿得到 `ctx.under`（上一段的成帧）；
+  单独播它（`--only whip`）画面几乎是黑的，那是正常的。
+- `outro` 别写太短：细线要到 t=1.6 才收拢完、压黑在最后 0.6 秒，段长短于约 2 秒会看到"还没写完就黑了"。
+
+---
+
+## 5. 时长与节奏
+
+`dur`（段长）和 `at`（绝对起点）都接受这几种写法：
+
+| 写法 | 意思 |
+|---|---|
+| `dur: 5` | 5 秒 |
+| `dur: { beat: 8 }` | 8 拍 |
+| `dur: { bar: 2 }` | 2 小节（1 小节 = 4 拍） |
+| `dur: { vo: 'hook-1' }` | 和 `hook-1` 这句旁白**一样长**（可加 `tail: 1.2` 再多留 1.2 秒） |
+| 不写 | **4 秒** |
+
+**没有音乐时按 bpm 120 折算**（`src/timeline.js` 的 `beatTime`，`bpm` 缺省 120）：
+一拍 0.5 秒、一小节 2 秒。所以 §2 那个例子里 `{ beat: 8 }` 其实是 4 秒。
+⚠ **同一个配置，配了音乐之后 `{ beat: 8 }` 会变成另一个长度** —— 那正是"镜头长度天然对齐音乐"的代价。
+要么配 `audio` + 跑一次 `analyze`，要么统一写秒。
+
+有音乐时的推荐流程：
+
+```sh
+node scripts/anim.mjs analyze 我的片子     # 生成 tasks/我的片子/audio/<音乐文件名>.analysis.json
+```
+
+之后 `{ beat: n }` / `{ bar: n }` 走的是**分析出来的真实拍网格**（`music.beats`），
+切镜头就自然落在拍上：
+
+```js
+timeline: [
+  { type: 'title', title: '…', dur: { bar: 2 } },                     // 2 小节
+  { type: 'chart', values: [/* … */], dur: { beat: 16 }, overlap: 0.4 },
+]
+```
+
+（`music.timeOfBeat(...)` 那些是**场景里**的 API；配置档用不到，写 `{ beat }` 就够了。）
+
+`{ vo: 'line-id' }` 的一个前提：`build()` 是在**任务加载时**跑的，那时能看到的旁白表只有
+**内联**的那张 —— `narration: { lines: [{ id, text, start, dur }, …] }`（字段见 `src/core/narration.js`）。
+`narration: './narration.json'` 是外部文件，页面启动**之后**才 fetch（`src/app.js` 的 `boot`），
+那时时间线早就排好了 —— 所以纯配置 + `{ vo }` 请用内联表。句子 id 写错会抛错并列出表里的 id，
+不会静默退化成 4 秒。
+
+---
+
+## 6. 转场
+
+`overlap` = "与上一段重叠多少秒"。不写就是 0，也就是**硬切** —— 大多数剪辑点本来就该是硬切。
+
+```js
+timeline: [
+  { type: 'title', title: '开头', dur: 4 },
+  { type: 'whip',  dur: 0.8, overlap: 0.6 },                          // 甩镜转场
+  { type: 'chart', values: [0.3, 0.7, 0.95], dur: 6, overlap: 0.6 },  // 引擎默认转场（交叉溶解）
+  { type: 'outro', title: '完', dur: 3 },
+]
+```
+
+- **`whip`**：模板自己声明了 `handlesTransition: true`（`src/shots/whip.js`），
+  它读 `ctx.under`（上一段这一刻的成帧）做方向性模糊 + 速度线 + 震屏。你只要给它 `overlap`。
+- **其它模板**：不写 `handlesTransition` 时，引擎自己做**交叉溶解** —— 把上一段的成帧与本段按
+  入场进度 `tin` 混起来（`src/core/engine.js`）。
+- ⚠ **文字量大的画面不要交叉溶解**：两屏字叠在一起会糊（`AGENTS.md` §4.5）。
+  要么硬切（不写 `overlap`），要么让它"走掉"—— 用 `whip`，或者回去写场景用
+  `src/core/trans.js` 的 `transitionPass` / `enterOffset`。
+- **配置档不需要 `world` / `worldPass`**：8 个模板都自带整帧背景（各自的背景 Pass 或
+  `gl.clear` 到 `P.ink`），写上去只是多铺一层马上被盖掉的底。共享背景是给**手写场景**用的
+  （`cut(scene, { world: 'auto' })`，见 `AGENTS.md` §3）。
+
+---
+
+## 7. 需要音乐的三个模板：`wave` `pulse` `grid`
+
+这三个读 `ctx.music`（包络数组、拍点、打击事件）：
+
+- **`task.config.mjs` 里没配 `audio` → 这三个模板的画面近乎是空的**（`wave` / `grid` 基本全空；
+  `pulse` 仍会画中心方块与底部标题）。`check` 会报这几段亮度≈0，别以为模板坏了。
+  ⚠ 但注意 `ctx.music` **不是 `null`** —— 它是空对象 `SILENT`：`music.hasAudio === false`、
+  `music.beats.length === 0`、包络全是 `0`，所以 **`f.a` 的字段是 `0` 而不是 `undefined`**。
+  要判"有没有音乐"用 `ctx.music.hasAudio`（或 `music.beats.length > 0`），**不要**写 `if (!ctx.music)`
+  或 `f.a.rms === undefined` —— 那两种判法都会判反（画面会静默退化成一条平线）。
+- 配了 `audio` 但没跑过 `analyze`：也不会立刻黑 —— `MusicData.load` 会退回到
+  "在浏览器里现解码 + 现分析"（`src/core/audio.js`），画面出得来，只是每次启动都慢。
+  `video` / `shot` 发现缺分析文件时会**自己先补一次**并打印 `· 还没有音频分析数据，先算一遍（让画面能踩拍子）…`；
+  `still` 不会。稳妥做法还是自己先跑一次。
+
+```js
+audio: './audio/track.mp3',
+timeline: [
+  { type: 'wave',  label: 'BEAT', dur: 6 },
+  { type: 'pulse', title: '节奏不需要手抄', dur: 6 },
+]
+```
+
+```sh
+node scripts/anim.mjs analyze 我的片子    # → tasks/我的片子/audio/track.analysis.json
+node scripts/anim.mjs check 我的片子      # 印出 bpm / 拍数，并逐段报亮度
+```
+
+- **音频放在 `tasks/<任务>/audio/` 下**：`analyze` 把分析文件固定写在那个目录
+  （`scripts/anim.mjs` 的 `analyzeTaskAudio`），而页面是按"音频同目录"去找它的（`src/app.js`）。
+- `wave` 读的是**整片时间** `f.t`（它画的是"这首歌到此刻为止"的窗口），
+  `pulse` / `grid` 读**段内时间** `f.lt`（"这一段进来之后"）。这会影响你把它们放在第几段。
+
+---
+
+## 8. 边界与下一步
+
+**什么时候必须回去写场景**：模板覆盖不到的新视觉，以及一切"要自己画"的镜头。
+做法见 `AGENTS.md` §3（场景是什么形状）与 §3.5（`src/kit/shot.js` 的 `makeShot()`：
+共享背景、甩镜转场、一台摄影机都包好了，场景只管画前景）；做法手册见 `docs/COOKBOOK.md`。
+写完照旧能混进同一条时间线：
+
+```js
+timeline: [
+  { type: 'title', title: '开头', dur: 4 },     // 配置档
+  cut(myScene, { dur: 6, world: 'auto' }),      // 手写场景（这时才需要 world）
+]
+```
+
+**想加一个新的镜头模板**（让它以后也能"零代码"）：
+
+1. 在 `src/shots/` 加一个模块，导出 `xxxShot(opts)`，并在工厂上挂 `.defaults`（参数的唯一真源）
+   与 `.meta`（`name` / `summary` / `notes` / `params`，`anim shots` 打印的就是它）；
+2. 在 `src/shots/index.js` 的 `SHOTS` 表里注册这个名字（`{ type: '名字' }` 分发读的就是它）。
+
+两条守门断言在 `tools/test-shots.mjs`（只读对象与源码文本，不渲染、可与渲染并行跑）：
+
+- `SHOTS` 的键集合必须等于那个文件里的 `TEMPLATES` 列表 —— **加了模板要同步改那份列表**，否则回归会红；
+- 每个模板 `meta.params` 的名字集合必须等于 `.defaults` 的键集合 —— 这就是"文档与代码脱节"的守门
+  （`anim shots` 打印的**参数表来自 `meta`、默认值来自 `defaults`**，两者对不上就会有人照着文档写出默认画面）。
+
+```sh
+node tools/test-shots.mjs      # 镜头库的登记 + 文档一致性 + 报错路径
+```
+
+**不要**为了"纯配置"把模板撑成大而全的 DSL：模板应该少而专，需要新视觉时回 C 档写代码
+（`docs/ROADMAP.md` §2 B 档末尾）。
+
+---
+
+## 9. 排错表
+
+| 症状 | 多半是 | 下一步（命令都是真能跑的） |
+|---|---|---|
+| `未知的镜头模板 "xxx"` | `type` 拼错，或用了一个不存在的模板名 | `node scripts/anim.mjs shots` 列出全部 8 个名字 |
+| `镜头模板 "chart" 没有参数 "value"（大概是拼错了）` | 参数名拼错；或把时间线字段名写错（如 `durs`） | `node scripts/anim.mjs shots chart` —— 唯一权威的参数表（名字/类型/默认值/说明） |
+| `时间线里不能混写「配置档节点」和「已经展开好的段」` | 把 `build()` 的产物（带数字 `start`/`end` 的对象）又塞回了 `timeline` | 统一成一种写法：都写 `{ type: … }`，或都写 `cut()`/`seq()`；手写场景用 `cut()` 是允许的 |
+| 画面全黑（只有 `wave`/`pulse`/`grid` 的段） | 没配 `audio`（`ctx.music` 为 `null`），或分析数据不在 | ① 在 `task.config.mjs` 里配 `audio: './audio/x.mp3'` ② `node scripts/anim.mjs analyze <任务>` ③ `node scripts/anim.mjs still <任务> -t <这一段中间的时刻>`，再用 Read 看图 |
+| 时长不对（每段都成了 4 秒） | 忘了写 `dur`（默认就是 4 秒） | `node scripts/anim.mjs check <任务>` 会把时间线逐段印成「段名 / 时长 / 起止」，一眼能看出是不是全 4 秒 |
+| 段名出现 `title_2` `title_3` | 同一种模板在一支片子里用了几次，不写 `id` 时都用模板默认段名 | 需要区分就给每段显式写 `id`；`check` 的时间线表里看得到最终段名 |
+| 时间线里写的 `post` 好像没生效 | 模板 `render()` 里 `return` 的 post 会**盖过**同名的键（合并顺序是 `{…默认, …item.post, …场景 return}`，`src/core/engine.js`） | 只写模板没设的键；或在 `still` 出图前后各来一张对比：`node scripts/anim.mjs still <任务> -t <时刻>` |
+| 改了配置但预览没变 | `npm run dev` 的预览服务看不到**新建的**任务目录 | 重启预览服务；CLI 渲染不受影响 |
+| 出片/出图期间改了配置 | `task.config.mjs` **在** Vite 的模块图里，改它会触发重载、打断渲染 | **渲染期间一个文件都别写**（`docs/*.md` 也不行 —— 编辑器的原子写会留下**不以 `.md` 结尾**的 `.tmpdir/…tmp`，`vite.config.mjs` 的 `watch.ignored` 挡不住，撞 `EBUSY` 会让 Vite 进程直接崩、渲染报 `ERR_CONNECTION_REFUSED`）。唯一被实测挡住的是 **`out/**`**：并发产出先落 `out/_staging/`（`AGENTS.md` §7 / `docs/STATUS.md` §14.5） |
+
+---
+
+## 10. 交付前自检（与 `AGENTS.md` §10 同一套，配置档不例外）
+
+1. `node scripts/anim.mjs check <任务>` 无报错、无空档告警、每段都不是全黑
+2. `still` 抽查**每一段的中间帧**，并且**真的用 Read 工具看了图**
+3. 有音乐：`analyze` 跑过，镜头切点对齐在拍上（`check` 会印 bpm，`analyze` 会印拍数）
+4. `video` 出片成功（CLI 收尾会用 ffprobe 复核产物帧数）
+5. 段与段之间没有黑隙，最后一段有明确的收尾
+6. 想知道"改动前后画面到底变没变"：`node scripts/anim.mjs hashes <任务> --save` / `--baseline`

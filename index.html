@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- 内联一个空图标：否则浏览器会去请求 /favicon.ico，控制台里多一条 404 噪音 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230a0a0b'/%3E%3Crect x='3' y='7' width='10' height='2' fill='%23ff4d12'/%3E%3C/svg%3E" />
+  <title>anim · 代码动画引擎</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #0a0a0b; color: #eee9df;
+      font: 13px/1.5 ui-monospace, "SFMono-Regular", "IBM Plex Mono", Consolas, monospace; overflow: hidden; }
+    #wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+    #c { display: block; background: #000; box-shadow: 0 0 0 1px #2a2a2c; }
+    #hud { position: fixed; left: 12px; top: 10px; padding: 8px 10px; background: #101012cc;
+      border: 1px solid #2a2a2c; border-radius: 6px; white-space: pre; pointer-events: none;
+      opacity: .9; backdrop-filter: blur(4px); max-width: min(60ch, 70vw); }
+    #hud b { color: #ff4d12; font-weight: 600; }
+    #hud .err { color: #ff6a6a; }
+    #hud .ok { color: #d8ff3c; }
+    #msg { position: fixed; left: 12px; bottom: 10px; padding: 6px 9px; background: #101012cc;
+      border: 1px solid #2a2a2c; border-radius: 6px; opacity: .85; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="wrap"><canvas id="c"></canvas></div>
+  <div id="hud">loading…</div>
+  <div id="msg"></div>
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>

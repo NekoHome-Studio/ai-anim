@@ -1,0 +1,33 @@
+{
+  "name": "anim",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "确定性代码动画引擎：写代码 = 做动画。为 AI agent 设计。",
+  "license": "MIT",
+  "author": "suan-11",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite",
+    "still": "node scripts/anim.mjs still",
+    "sheet": "node scripts/anim.mjs sheet",
+    "shot": "node scripts/anim.mjs shot",
+    "video": "node scripts/anim.mjs video",
+    "check": "node scripts/anim.mjs check",
+    "tasks": "node scripts/anim.mjs tasks",
+    "shots": "node scripts/anim.mjs shots",
+    "gpu": "node scripts/anim.mjs gpu",
+    "perf": "node scripts/anim.mjs perf",
+    "new": "node scripts/anim.mjs new"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.49.0",
+    "vite": "^5.4.0"
+  }
+}

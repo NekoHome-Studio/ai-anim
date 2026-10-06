@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────
+#  anim · .gitignore
+#
+#  两条纪律（都是踩过坑写下来的）：
+#   ① **生成物不入库** —— 能由脚本重建的东西一律忽略，并且在该条规则旁边写清
+#      "谁生成它"，这样下一个人不用猜。
+#   ② **只留在作者本地的片子用目录级规则挡** —— 不是靠"删掉文件"，文件还在磁盘上，
+#      只是不进 git。
+# ─────────────────────────────────────────────────────────────
+
+# ── 依赖 / 构建产物 ───────────────────────────────────────────
+node_modules/
+.npm-cache/
+dist/
+.vite/
+
+# ── 渲染产物（单帧、短片、成片、分块、回归日志全在 out/ 下） ──
+out/
+
+# ── 会话 / 工具临时目录 ──────────────────────────────────────
+.dsh-vision-toolkit/
+
+# ── 音频 ─────────────────────────────────────────────────────
+# `.wav` 全是"先写 wav、再用 ffmpeg 编码成 mp3"的**中间物**，
+# 由 `scripts/make-*-audio.mjs`（配乐床）与 `scripts/lib/mix.mjs`（混音）生成，
+# 没有任何 `task.config.mjs` 引用它们 —— 删了不丢东西。
+*.mono22k.wav
+tasks/*/audio/*.wav
+
+# 旁白与混音轨是 TTS 产物（`anim say` / `anim mix`），体积大且可重建。
+tasks/*/audio/*-vo.mp3
+tasks/*/audio/*-mix.mp3
+tasks/*/audio/vo/
+
+# ⚠ **下面这三样必须入库，不要加进上面的规则里**：
+#   `audio/timing.mjs`、`audio/timing.json`、`audio/narration.json`
+#   它们被 `task.config.mjs` **直接 import / 引用**（例如 `tasks/beast`、`tasks/sodium`、
+#   `tasks/optifine`），重建要 Python + edge-tts + 联网，而且**时长会漂**。
+#   把 `tasks/*/audio/` 整条忽略掉会让那几个任务直接加载失败。
+
+# ── 只留在作者本地的片子 ─────────────────────────────────────
+# 文件还在磁盘上，只是不进这个仓库。
+# · 团队对外材料（NekoHome 的片子）
+tasks/nekohome/
+tasks/fidus/
+tasks/beast/
+# · 第三方技术科普片（素材量大；旁白音轨的再分发条款另议）
+tasks/sodium/
+tasks/optifine/
+# · 已废弃的开发期脚手架（`tasks/sodium` 齐了之后它就是废纸）
+tasks/sodium-preview/
+# · 不是任务，只是一份分析笔记（`anim tasks` 不会列出它）
+tasks/nekoseek/
+
+# 只服务上面那几支片子的配乐脚本，跟着片子一起留在本地。
+scripts/make-sodium-audio.mjs
+scripts/make-optifine-audio.mjs
+
+# ── 调试残留 ─────────────────────────────────────────────────
+*.log
+
+# ── 编辑器 / 系统 ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ── 字体 ─────────────────────────────────────────────────────
+# 仓库**自带**几个 SIL OFL 1.1 的字体（`public/fonts/`、`tasks/promo/fonts/`、
+# `tasks/_calib/fonts/`），清单与版权行见 `THIRD-PARTY.md`，许可证全文见
+# `LICENSES/OFL-1.1.txt`。OFL 允许再分发，所以它们**入不入库都可以** ——
+# 现在选择入库，这样克隆下来就能直接出图。
+# 想改成"字体自备"就把下面两行放开，同时把 `THIRD-PARTY.md` 里对应条目改成"不随仓库分发"。
+# public/fonts/*.woff2
+# public/fonts/*.ttf

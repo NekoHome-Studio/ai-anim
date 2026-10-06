@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────
+#  git 的跨平台与统计行为
+# ─────────────────────────────────────────────────────────────
+
+# 换行统一：仓库里一律存 LF。
+# 这个项目全是 .mjs / .js / .md / .json，没有任何需要 CRLF 的东西，
+# 而 Windows 上默认的 `core.autocrlf=true` 会让同一个文件在不同机器上产生
+# 无意义的整文件 diff —— 所以这里写死。
+* text=auto eol=lf
+
+# 二进制：明确标出来，git 才不会试图做换行转换、diff 也会直接说"二进制文件不同"
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.mp3   binary
+*.wav   binary
+*.m4a   binary
+*.mp4   binary
+*.mov   binary
+*.glb   binary
+*.gltf  binary
+*.rgba  binary
+*.nv12  binary
+*.yuv   binary
+
+# ── GitHub 的语言统计与 diff 呈现 ─────────────────────────────
+# 锁文件不参与语言统计（它是生成的）
+package-lock.json linguist-generated=true
+
+# docs/ 是文档，不是"这个仓库主要用 Markdown 写的"
+docs/**           linguist-documentation
+
+# 音频分析与时间表是脚本产物，别算进语言统计
+tasks/**/audio/*.json linguist-generated=true
+tasks/**/audio/*.mjs  linguist-generated=true
+
+# ── 让 diff 更有用 ───────────────────────────────────────────
+# 这些文件一行很长、改动通常是整行替换，按词 diff 比按行 diff 好读
+*.md   diff=markdown
