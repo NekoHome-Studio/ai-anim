@@ -164,12 +164,12 @@ anim
 | 逐段体检 | `node scripts/anim.mjs check promo` | ✓ 没有问题（6 段 × 15%/50%/85% 三个点 × 单子帧/多子帧两条路径，共 36 帧；背景守门与非有限值扫描都过） |
 | 一镜到底连续性 | `node out/_probe/continuity.mjs` | ✓ 五个边界：位置 Δ≤0.017 世界单位、朝向 Δ≤0.017、滚转 Δ≤6e-5、**切点两侧速度比 1.00–1.22**、调色 Δ≤0.016；母题逐帧最大位移 0.043；摄影机全程在世界腔体内（最小离墙 0.20） |
 | 出片前自检 | `node out/_probe/preflight.mjs` | ✓ 语法（9 个文件）/ 禁止写法（`Math.random`、`Date.now`、`performance.now`）/ **抖动不是逐帧白噪声** / 连续性 |
-| 成片 | `node scripts/anim.mjs video promo --segments 8 --samples 8 --idle 300` | **2880 帧 / 48.000s / 1920×1080@60 / h264 + aac 双声道**，9 块拼接，**ffprobe 复核通过**；1,228.3 MB；用时 2760s（46 分钟）。**这是修掉镜头抖动之后重出的一版**（前后对照见 `SCRIPT.md` §3.1、`docs/IMPROVEMENTS-3.md`） |
+| 成片 | `node scripts/anim.mjs video promo --segments 8 --samples 8 --idle 300` | **2880 帧 / 48.000s / 1920×1080@60 / h264 + aac 双声道**，9 块拼接，**ffprobe 复核通过**；1,228.3 MB；用时 2760s（46 分钟）。**这是修掉镜头抖动之后重出的一版**（前后对照见 `SCRIPT.md` §3.1、`docs/history/IMPROVEMENTS-1-3.md`） |
 | 成片验收 | `node scripts/anim.mjs verify promo` | ✓ **14 个时刻（按帧号对齐）全部与重新渲染一致**：mean 1.69–8.8（判据 <18）。高值出现在高频画面（raymarch 排线 + 密线框）上，是 h264 的正常代价，不是渲染差异 |
 | 镜头稳定性 | `node out/_probe/jitter.mjs out/promo/promo.mp4 46.5 8` | ✓ 成片逐帧整体位移 **±1px / RMS 0.27px**（修之前是 ±2–8px / RMS 3.64px、相邻帧之差最大 13px） |
 
 > ⚠ 诚实记录一处：`verify` 里几帧的 `max` 到 166–255、`>16` 占 10–18%（t=16.02 / 36.02 / 39.00）。
-> 这与 `docs/STATUS.md` §11.7 记的"高频细密画面"档一致（那里是 mean 7.0–7.7 / >16 13–17%），
+> 这与 `docs/history/STATUS-rounds-1-6.md` §11.7 记的"高频细密画面"档一致（那里是 mean 7.0–7.7 / >16 13–17%），
 > 而"拿错成片"那一档是 mean 26–43 —— 能分开的判据是 `mean`，不是 `>16`。
 > 想更严可以 `--samples 1` 重渲（那条路上与成片逐字节相同，是最强的验收）。
 

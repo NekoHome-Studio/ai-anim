@@ -162,7 +162,7 @@ slot     = ceil(max(internal*stretch, max_i(cue_i*stretch + dur_i)) + TAIL 到�
   `words` 拼起来不等于 `text` 时会 `console.warn` **一次**（不抛异常）。
   回归在 `tools/test-karaoke.mjs`（纯 JS，不需要 GPU）。
 - P1-4 的另一半（节拍被人声带偏）也修掉了：`task.audio` 分轨之后节拍从 `music` 轨测
-  （证据见 `STATUS.md` §11.10），`anim say` 取一拍也不再写死 BPM（优先级见上面 B 档）。
+  （证据见 `history/STATUS-rounds-1-6.md` §11.10），`anim say` 取一拍也不再写死 BPM（优先级见上面 B 档）。
 
 ## 5. 验收标准（这次用的，现在各由什么自动检查）
 
@@ -181,4 +181,4 @@ slot     = ceil(max(internal*stretch, max_i(cue_i*stretch + dur_i)) + TAIL 到�
    这不是 bug，是"镜头长度由旁白决定"的直接后果。**没有**自动检查。
 5. **成片验收** —— 帧数 = `时长 × fps`：✅ 自动，CLI 出片收尾会自己用 ffprobe 复核
    （分块模式逐块复核；不符就报错并删掉废文件）。同参数重渲一遍**逐比特相同**：
-   **没有**自动检查（实测结论记在 `STATUS.md` §11.6）。
+   **没有**自动检查（实测结论记在 `history/STATUS-rounds-1-6.md` §11.6）。

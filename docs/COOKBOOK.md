@@ -328,6 +328,27 @@ if (pts.length > 1) lines.polyline(pts, 8, [P.signal[0] * 1.5, P.signal[1] * 1.5
 lines.flush(ctx.out);
 ```
 
+### 2.5 画"实心块"时：**alpha 管在不在，tone 管亮不亮**
+
+用排线拼出来的填充（`hatchQuad({ solid: true })` 那种"半实心面"）有一个反直觉的坑，
+它是本地做方块世界时最贵的一条教训（`docs/history/IMPROVEMENTS-4-5.md` §4.3）：
+
+- `LineBatch` **没有深度测试**，面的"填充"是一排线拼出来的；
+- 只要 `alpha < 1`，排线之间那道**发丝缝**就会把后面的东西透出来 ——
+  于是"把远处的方块压暗"如果写成"把 alpha 降到 0.4"，得到的是**整片世界变玻璃**；
+- 正确做法：**"暗"由颜色承担，"在不在"才由 alpha 管**。
+
+```js
+// 填充：只有 a < 0.17 才真的淡出（那是给"出现/消失"用的）
+const fillA = sat((a - 0.05) / 0.12) * fillK;
+// "暗"：tone 随 a 线性掉到 0.22
+const tint = base * (0.22 + 0.78 * a);
+// 排线缝闭死
+hatchQuad(..., { solid: true, solidK: 0.99, minW: 1.6 });
+```
+
+一句话：**想让东西变暗就改颜色，想让东西消失才改 alpha。**
+
 ---
 
 ## 3. 文字：逐字入场与打字机
@@ -389,6 +410,13 @@ type.writeLine('右下角读数', W - 90, H - 90, { anchor: 'right', size: 34, f
 
 ### 3.4 多行正文 / 字幕块
 
+> ⚠ **先分清你要的是哪一种**（`docs/CAPTIONS.md`）：
+> · **语音字幕**（旁白说了什么）→ 用引擎的字幕层，`task.config.mjs` 写 `captions: true` 就有，
+>   场景里**一行都不用写**。位置来自风格包的**字幕保留带**，不会被别的东西压住。
+> · **画面正文**（名词 / 数字 / 单位 / 出处这类**标注**）→ 才是下面这段代码的用途。
+>   它**不许复述旁白**：同屏两套完整句子就是观众反馈里"两条字幕同时出现，看着好迷糊"。
+>   交付前跑 `node tools/lint-narration-dup.mjs <任务>` 自查（报到 `文件:行号`）。
+
 ```js
 text.clear();
 const lines2 = type.wrap('这一段会自动折行：中文按字折行，Latin words break by word boundary.', { size: 34, family: 'sans' }, W * 0.5);
@@ -406,6 +434,10 @@ text.upload();
 ```js
 type.paragraph('说明文字……', W * 0.1, H * 0.62, { size: 34, family: 'sans', color: css(P.ash) }, { width: W * 0.5, lineHeight: 46, alpha: [0, 1], t: f.lt });
 ```
+
+> **颜色的 alpha 有两种写法，现在两种都对**（`docs/history/IMPROVEMENTS-4-5.md` §2）：
+> `css(P.bone, 0.6)`（推荐）与 `css(col(P, 'bone', 0.6))`（颜色本身是 4 元组时取第 4 分量）。
+> 后者以前会被**静默丢掉** —— 于是"整行淡入"完全不生效，而画面看起来只是"没有动画"。
 
 ### 3.5 跟随数值的读数 / 计数器
 

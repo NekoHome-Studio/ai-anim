@@ -7,7 +7,7 @@
 >
 > 这份模板已经被连续两支片子用过（`tasks/nekohome/FACTS.md`、`tasks/fidus/FACTS.md`），
 > 它是刚需而不是仪式：上一次它直接逼出了「用户给的矩阵表和仓库 `docs/spec.md` §2.1 对不上」
-> 这个**必须发问才能定**的问题（`docs/IMPROVEMENTS.md` §4）。
+> 这个**必须发问才能定**的问题（`docs/history/IMPROVEMENTS-1-3.md` §4）。
 >
 > 用法：`cp docs/FACTS-TEMPLATE.md tasks/<任务>/FACTS.md` 然后逐节填。
 

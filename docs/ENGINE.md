@@ -32,7 +32,7 @@
 | `new Date()` | 同上 | 同上 |
 | 逐帧累积状态 `this.x += v*dt` | 子帧乱序、可任意 seek，累积值没有意义 | 写成时间的函数：`x = f(f.t - birth)` |
 | 用 `Math.floor(t*60)` 做按帧抖动 | 一帧内的子帧会取到**不同**帧号 → 双重曝光/撕裂 | 用 `f.idx`（引擎已保证一帧内所有子帧共享同一个 `idx`）；噪声种子用 `f.seed` |
-| 拿**逐帧白噪声**当"手持"抖动（`shake: [(hash2(f.idx,1)-.5)*2*amp, …]`） | 60fps 下每 16.7ms 跳到一个新位置 = **振动**，不是手持；5px 就能被看成"地震"（promo 那轮的实际反馈） | 用 `shakeSmooth(f.t, amp)`（`src/core/cam.js`，是 `t` 的平滑函数，一帧内子帧只差 ~0.02px）；真要震屏才用逐帧噪声，写成 `handheld(cam, f.t, f.idx, { mode: 'grain' })`。见 `docs/IMPROVEMENTS-3.md` |
+| 拿**逐帧白噪声**当"手持"抖动（`shake: [(hash2(f.idx,1)-.5)*2*amp, …]`） | 60fps 下每 16.7ms 跳到一个新位置 = **振动**，不是手持；5px 就能被看成"地震"（promo 那轮的实际反馈） | 用 `shakeSmooth(f.t, amp)`（`src/core/cam.js`，是 `t` 的平滑函数，一帧内子帧只差 ~0.02px）；真要震屏才用逐帧噪声，写成 `handheld(cam, f.t, f.idx, { mode: 'grain' })`。见 `docs/history/IMPROVEMENTS-1-3.md` |
 | 写文件 / 发网络请求 / 改全局状态于 `render()` 内 | 并行与重渲都会失控 | 放 `setup()` |
 
 `frameIdx(t, fps)`（`util.js`）的实现是 `Math.floor(t * fps + 1e-6)`，那个 `1e-6` 是为了让 `t=2.0, fps=60`（浮点算出 119.99999）落在 120 而不是 119。**不要自己写这个公式**，用 `f.idx`。
@@ -228,6 +228,10 @@ export default {
 | `world` | 这一段的共享背景：`'auto'`（= `task.world`，全片复用）/ 一个 `Pass` / 一个 `(ctx) => Pass` 工厂 / `false`（本段自己铺底）。引擎在场景 `render()` **之前**就把它画进 `ctx.out` —— 所以场景里别再铺一遍，也别指望 `setXform` 能把它留下（§3.5 要点 2） |
 | `narration` | 旁白查询（没配旁白时所有方法安全返回 `null`）：`at(t)` / `recent(t, hold=1.2)` / `typed(t)` / `progress(t)` / `in(t, id)` / `line(id)` / `durOf(id)` / `until(t)`；`at(t)` 返回的句子自带 `p` / `remain` / **`typedText`** / `restText` / `charIndex` / `words`（`typedText` 就是打字机文本，`words` 直接喂 `type.karaoke`） |
 | `params` | 这一段的时间线参数 |
+| `style` | **风格包**（`docs/STYLE.md`，`src/style/index.js`）：`{ name, label, motif, palette, fonts, post, grid, captions }`。不写 `task.style` 时它是 `print`（= 引擎从前的默认观感，零像素变化）。颜色已经通过 `P` 生效，这里给的是"这一片用的是什么介质"这类元信息 + 栅格/母题 |
+| `grid` | **风格栅格**（已按分辨率缩放）：`{ pad, top, footerLineY, footerY, captionLineY, captionY, contentBottom, captionBand }`。别在场景里再写 `120` / `964` 这类魔数 —— kit 的 `bandsOf(ctx)` 就是读它 |
+| `captions` | **引擎字幕层**（`docs/CAPTIONS.md`）：`active(t)`（此刻该显示的那句，含"说完再留一会儿"）/ `band`（字幕保留带矩形）/ `style` / `lines`。没开字幕时是一个安全空实现（`band` 也给了默认值），所以场景可以无条件读 `ctx.captions.band` 来避让 |
+| `warnings` | 运行期**警告**通道（与 `engine.warnings` 是同一个数组）：kit 的 `assertInBand()`（文字压进字幕带）、`captionNote()`（说明条写成了句子）会往这里 push。用 `ctx.warnings.push('…')` 而不是 `console.warn` —— 它每帧都会发生；`anim check` 会把它们打出来 |
 | `W` / `H` | 逻辑分辨率（= `gl.w` / `gl.h`） |
 | `start` / `end` | 本段起止 |
 | `item` | 时间线条目本体（`{id,start,end,post,maxSamples,...,_scene,_layer}`） |
@@ -357,7 +361,7 @@ export default {
   一端在后 → 截到近平面上。少了这一步，镜头穿过物体时会画出翻面的长线。
 * `depthScale(cam3, w, H)` 给"近大远小"的倍率（线宽 / 字号乘它）。
 
-> ⚠ 这两条以前都写反过（`docs/STATUS.md` §13.4.2）：`camera3` 的手性反了会让**整幅画面左右镜像**，
+> ⚠ 这两条以前都写反过（`docs/history/STATUS-rounds-1-6.md` §13.4.2）：`camera3` 的手性反了会让**整幅画面左右镜像**，
 > `rayDir` 多翻一次 y 会让**整个世界上下颠倒**。两者都**不报错**，而且左右/上下对称的场景里
 > 完全看不出来。现在 `tools/test-cam-math.mjs`（33 项）与 `tools/probe-raymarch.mjs`（`ray` 变体）
 > 各自钉了一半，改动 `cam.js` / `glsl3d.js` 之后跑一下。
@@ -418,7 +422,7 @@ setup(ctx) {
 
 ### 3.7.3 「整屏白 / 整屏黑 / 一片死平」怎么查
 
-引擎里**没有一种失败长得像它的原因**（`docs/STATUS.md` §13.4），先看这张表再去改代码：
+引擎里**没有一种失败长得像它的原因**（`docs/history/STATUS-rounds-1-6.md` §13.4），先看这张表再去改代码：
 
 | 你看到的 | 真正发生了什么 | 怎么确认 |
 |---|---|---|
@@ -761,7 +765,7 @@ comp.draw(gl, text, ctx.out, { premult: false });   // ④ 叠到场景上
 语义细节（都是代码事实，不是约定）：
 
 - 第 i 个字的进度 `k = sat((t - i*stagger) / staggerDur)`；**只有 `stagger > 0` 或 `alpha` 是数组时才走这条公式**，否则 `k = 1`（整串立即出现）。
-  > 两个历史坑，现在都修好了（`docs/IMPROVEMENTS.md` P1-3 → `docs/IMPROVEMENTS-2.md` P0-1）：
+  > 两个历史坑，现在都修好了（`docs/history/IMPROVEMENTS-1-3.md` P1-3 → `docs/history/IMPROVEMENTS-1-3.md` P0-1）：
   > ① 以前条件是 `stagger > 0`，于是 `stagger: 0` + `alpha: [0,1]` 的"整行淡入"取不到起始值、整行直接以终值出现（两个任务的 `_kit.js` 只好写 `stagger: 1e-4` 绕过）；
   > ② 后来把**数值型** `alpha` 也当成"要动画"，于是 `alpha: 0.5` 配缺省的 `t = 0` 取到 `k = 0` —— 而 `k <= 0` 是 `continue`，**整个字形不画**（不是画成透明）。症状是"一整块字凭空消失、其余画面完全正常"，`check` 的亮度统计看不出来（tasks/beast 的字典大格与兽语卡就是这么没的）。
   > 现在：数组型才按 `t` 插值，数值型就是常量不透明度；`alpha <= 0` 时这一行整体不画（这是调用方的本意）。
@@ -877,7 +881,7 @@ L.flush(target);                       // 返回画了多少条线段
 - **`a` 是真半透明**：片元输出是 premultiplied（`rgb * a, a`），混合是 `ONE, ONE_MINUS_SRC_ALPHA`，所以
   `lines.seg(x, y, x2, y2, w, [r, g, b, 0.05])` 得到的是**叠加上去的一层淡墨**，不是"和黑色混"。
   做面板底、网格、水印都用它，比调低 `r,g,b` 更正确（后者会把颜色往黑里拉）。
-  > 这条以前没写进文档，结果是读源码才知道能传 4 个分量（`docs/IMPROVEMENTS.md` P1-5）。
+  > 这条以前没写进文档，结果是读源码才知道能传 4 个分量（`docs/history/IMPROVEMENTS-1-3.md` P1-5）。
 - `width` 是逻辑像素，内部带 1.5px 的 AA 余量；`flush` 时用 `gl_FragCoord` 反算距离，所以 4K 下同样粗细。
 - 容量上限：构造函数给的 `capacity` 条线段；每次 `_push` 检查 `offset + 6 > capacity * 6`，满了**静默丢弃**后面的（宁可少画不崩）。引擎级 `ctx.lines` 的容量是 **60000**。
 - 引擎只有**一个** `LineBatch` 实例（`ctx.lines`），所有段共用。它的 `begin()` 会清掉上一段没 `flush` 的内容，所以每段自己 `begin` + `flush` 即可。
@@ -957,7 +961,7 @@ render(ctx) {
 
 > **每个参数都写清「0 是什么、1 是什么、往哪个方向」**。以前这张表只列了名字，结果最典型的一次踩坑是
 > 「开场从黑淡入」写成了 `fade: 1 - prog(...)` —— 以为 `fade` 是亮度，于是**整场都是黑的**。
-> `fade` 是「黑掉的量」，不是「亮度」（`docs/IMPROVEMENTS.md` P1-6）。
+> `fade` 是「黑掉的量」，不是「亮度」（`docs/history/IMPROVEMENTS-1-3.md` P1-6）。
 
 | 参数 | 类型 | 默认 | 0 / 1 的含义与方向 | 该调它的场景 |
 |---|---|---|---|---|
@@ -1001,7 +1005,7 @@ render(ctx) {
 > ⚠ **逐帧白噪声（`hash2(f.idx)`）不是手持，是振动**：60fps 下每 16.7ms 跳到一个新位置，
 > 幅度只有 5px 也会被看成"地震"。这条是 `tasks/promo` 那轮的实测教训（成片相邻帧互相关：
 > RMS 3.64px / 相邻帧差 13px → 改成 `shakeSmooth` 后 0.27px / 1px）。
-> 判据：**逐帧变化量 ≈ 幅度** 就是白噪声的指纹（平滑抖动是它的 1/20）。完整报告见 `docs/IMPROVEMENTS-3.md`。
+> 判据：**逐帧变化量 ≈ 幅度** 就是白噪声的指纹（平滑抖动是它的 1/20）。完整报告见 `docs/history/IMPROVEMENTS-1-3.md`。
 >
 > 两个必做：①用 `t` 的平滑函数；②幅度**随"镜头停住"衰减**（`amp * (1 - 0.75 * settle)`）——
 > 镜头刹住了画面还在晃，才是"越到后面越像地震"。
@@ -1346,7 +1350,7 @@ result = mean(render(subT) for each subT)
 （段之间的相对先后与重叠保持不变。）
 
 **`--segments N`**：分块渲染再 `ffmpeg concat` 拼起来。**N 是目标块时长（秒），不是「等分几份」** ——
-实际块数 ≈ 片长 ÷ N，不带值的裸 `--segments` 等于 10 秒（`renderSegments()`；语义变过，见 `docs/IMPROVEMENTS.md` P2-4）。
+实际块数 ≈ 片长 ÷ N，不带值的裸 `--segments` 等于 10 秒（`renderSegments()`；语义变过，见 `docs/history/IMPROVEMENTS-1-3.md` P2-4）。
 切点优先落在**段边界**上，所以每块都是完整镜头、转场不会跨块。已渲好的块
 （`out/<任务>/<任务>.parts/`）会自动跳过，改一个镜头只需重渲它所在的那块；`--force` 全重渲。
 
@@ -1358,7 +1362,7 @@ result = mean(render(subT) for each subT)
 - 有看门狗：**默认 `--idle 300` 秒没有任何「进展」才报**（判据是四个信号全静止：收帧数、页面 `sent`、
   ffmpeg 在排水、产物文件在变大；任一在动就续命），而且要等到 `1.5 × --idle` 才真正收工。
   报的时候会打印页面推流状态、已连接客户端、ffmpeg 退出码与最近一次进展，
-  并**分清「在等 ffmpeg 排水」和「渲染停滞」**（混为一谈会把人引向错误的排查方向，`docs/IMPROVEMENTS.md` P0-1）。
+  并**分清「在等 ffmpeg 排水」和「渲染停滞」**（混为一谈会把人引向错误的排查方向，`docs/history/IMPROVEMENTS-1-3.md` P0-1）。
 - 渲染是**同步逐帧**的，`--inflight` 控制页面侧在途帧数（背压），4K 时别调大。
 
 ### 12.1 `window.__anim` 协议（app.js 暴露给 CLI / agent）
@@ -1501,7 +1505,7 @@ node tools/test-narration.mjs            # 旁白层：叠句 / 留白 / 占比 
 node tools/test-easing-warn.mjs          # 缓动名写错必须警告（不是静默退化成 linear）
 ```
 
-完整清单（各脚本的判据与适用场合）见 `docs/STATUS.md` §11.15。
+完整清单（各脚本的判据与适用场合）见 `docs/history/STATUS-rounds-1-6.md` §11.15。
 
 ### 已知的「代码与直觉不符」（写文档时逐条核对出来的）
 

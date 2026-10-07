@@ -11,10 +11,10 @@
 > 1. **§5.1 的连带影响说反了。** 它写"修好编码后 `nekohome/scenes/_kit.js` 的
 >    `disp/dcss/dscale` 必须回改，否则浏览器预览会发灰"。实测正好相反：**预览一直是对的**，
 >    错的是导出；那三个函数让矢量通道偏亮、Canvas2D 通道偏暗。
->    详见 `STATUS.md` §1.3 与 §8（这件事还没做，需要拍板）。
+>    详见 `STATUS-rounds-1-6.md` §1.3 与 §8（这件事还没做，需要拍板）。
 > 2. **§2.5「4K 依然不可用」已不成立。** 根因是 `LineBatch` 顶点着色器用**物理**分辨率
 >    换算裁剪空间（`(p / res) * 2.0 - 1.0`），SCALE=2 时几何落错位置、片元一个都没跑到；
->    改用逻辑分辨率即可。`--scale` 已解禁。详见 `STATUS.md` §6.3。
+>    改用逻辑分辨率即可。`--scale` 已解禁。详见 `STATUS-rounds-1-6.md` §6.3。
 >
 > **读者**：下一个会话的 agent。
 > **来源**：某一轮把 `tasks/nekohome`（NekoHome 宣传片）从零做到两版成片，过程中把引擎从
@@ -221,4 +221,4 @@ ffprobe -v error -show_entries format=duration -show_entries stream=nb_frames,r_
 - `public/fonts/fonts.css`、`public/fonts/Manrope-600.woff2` —— 新增字体
 - `tasks/nekohome/**` —— 本轮新建的任务（`FACTS.md` 记着每一句文案的出处）
 - `out/nekohome/**` —— 成片与核对图（`check/trans_hero_about.png` 是转场分解图）
-- `docs/HANDOFF.md` —— 本文
+- `docs/HANDOFF.md` —— 本文（已移到这里：`docs/history/HANDOFF.md`）

@@ -774,7 +774,6 @@ docs/              ENGINE.md（引擎规格）、COOKBOOK.md（做法手册）�
 docs/history/      **归档**：已完成 / 已过期的东西，只作历史参考，**不要当待办读**
                    （索引见 docs/history/README.md）：
                    HANDOFF.md（引擎早期的交接单）、HANDOFF-THREEJS.md（Three.js 接入提案）、
-                   HANDOFF-sodium.md（sodium 可读性方案）、
                    IMPROVEMENTS-1-3.md（第一～三轮：fidus / beast / promo 那三轮，53 条全落地）、
                    IMPROVEMENTS-4-5.md（第四～五轮：optifine 那轮 + 风格包/字幕层）、
                    STATUS-rounds-1-6.md（STATUS 的第一～六轮详细记录，**§1–§13 的章节号原样保留**）

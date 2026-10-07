@@ -2,7 +2,7 @@
 
 > 48.0 秒 / 1920×1080 / 60fps / 120bpm（一拍 = 0.5s，全片 24 小节）
 > **零 overlap、零 handlesTransition** —— 连续性靠「一个世界 + 一台摄影机 + 一个母题 + 一套调色」，
-> 和 `tasks/pdoom-lab` 同一套手法（见 `docs/STATUS.md` §13.1）。
+> 和 `tasks/pdoom-lab` 同一套手法（见 `docs/history/STATUS-rounds-1-6.md` §13.1）。
 > 屏幕上每一句话的出处见 `FACTS.md`；机械验收见 `out/_probe/`（一镜到底的连续性探针）。
 
 ## 0. 一句话
@@ -69,7 +69,7 @@
 2.4px（俯冲）→ 落版衰减到 0.25 倍。用 `t` 而不是 `f.idx`：平滑函数在一帧的 8 个子帧之间
 只差约 0.02px，不会双重曝光（那才是白噪声的问题），又会像真实抖动那样被运动模糊带一点。
 
-引擎侧的证据与建议（仓库里两条并存的写法、`handheld()` 的默认行为等）写在 `docs/IMPROVEMENTS-3.md`。
+引擎侧的证据与建议（仓库里两条并存的写法、`handheld()` 的默认行为等）写在 `docs/history/IMPROVEMENTS-1-3.md`。
 
 ## 4. 屏幕上的每一句话
 
@@ -85,7 +85,7 @@
 | 3 | 「每一个像素，都是算出来的」 | `README.md:3`（原文："每一个像素都由 WebGL2 着色器与几何实时算出来"） |
 | 4 | 「每一帧都是时间的纯函数」 | `AGENTS.md` §0 / `README.md` |
 | 4 | 「任意 seek · 多子帧求平均做真运动模糊」 | `README.md` / `AGENTS.md` §0 |
-| 4 | `// 同一帧渲两遍，逐字节相同` | `docs/STATUS.md` §11.6（60/60 帧逐字节相同） |
+| 4 | `// 同一帧渲两遍，逐字节相同` | `docs/history/STATUS-rounds-1-6.md` §11.6（60/60 帧逐字节相同） |
 | 5 | 「它自己读代码、渲染、看图、改」 | `README.md:5`（逐字） |
 | 5 | `// README.md · 直到片子对为止` | `README.md:5` |
 | 5 | 「它看过的那些帧，都还留在 out/ 里」 | 可核实：`out/promo/stills/*.png` |

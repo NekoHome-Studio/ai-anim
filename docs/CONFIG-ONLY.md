@@ -80,13 +80,22 @@ node scripts/anim.mjs video 我的片子            # 出成片 → out/我的�
 | 字段 | 意思 |
 |---|---|
 | `title` | 片子名（HUD 里显示；与模板参数 `title` 是两件事） |
+| `style` | **风格包**：`'paper'` 或 `{ name: 'paper', grid: {…} }`。一行换掉整片观感（配色 / 字体 / 背景母题 / 后处理基线 / 栅格 / 字幕样式）。可选的看 `node scripts/anim.mjs styles`，细则见 `docs/STYLE.md`。**不写 = `print`**（= 引擎从前的默认观感，一像素不变） |
+| `captions` | **引擎字幕层**（`docs/CAPTIONS.md`）：`true` 就开，或有旁白时写 `{ size: 46, karaoke: true }` 微调。开了之后引擎每帧自动画当前那句旁白，场景里一行都不用写。**默认关**（老任务零变化） |
 | `width` `height` `fps` `scale` | 逻辑分辨率、帧率、输出倍率（`scale: 2` = 真 4K），默认 `1920 / 1080 / 60 / 1` |
-| `palette` | 覆盖调色板（键见 `src/core/palette.js`：`ink` `bone` `signal` `ember` …）。**8 个模板的强调色都取自 `signal`**，改它会整片换色 |
+| `palette` | 覆盖调色板（键见 `src/core/palette.js`：`ink` `bone` `signal` `ember` …）。**与风格包叠加，任务优先**：`style: 'paper'` + `palette: { signal: '#1f6f9c' }` = 纸面风格但换掉强调色 |
 | `audio` | 音乐（相对任务目录）。需要音乐的模板（§7）必须配它 |
 | `fonts` | 任务自带字体（`.css` 或字体文件），相对任务目录 |
 | `duration` | 总时长；不写 = 时间线最后一个 `end` |
 | `narration` | 旁白句子表（内联对象或 json 路径），配合 `dur: { vo }`；细节见 `docs/NARRATION.md` |
 | `timeline` | **时间线**：数组，或 `seq([...])`（见 `AGENTS.md` §3） |
+
+> **配置档能改到哪一层（2026-10 起）**：以前换风格只能靠 `palette`，而 8 个模板自带的背景、
+> 硬编码的字体族、以及模板 `return` 的 post 让"零代码出片"必然长得像 demo。现在
+> **`style` 一行**就能换掉：调色板 + 字体栈（`TextKit` 的族映射，模板里写的逻辑名会跟着换）
+> + 背景母题（`worldPass` 的 `motif`）+ 后处理基线（`style.post` 最后合并，压得住模板的 bloom）
+> + 版面栅格 + 字幕样式。背景母题只在用 `world: 'auto'` 的段生效 —— 8 个模板自带满帧背景，
+> 所以换母题要么写手写场景，要么用 `--style` 先看效果。
 
 > 新建任务目录后：用 CLI 渲染**不需要**重启任何东西；`npm run dev` 的预览服务需要重启一次才看得到新任务
 > （`src/tasks.js` 的提示语）。
@@ -121,7 +130,7 @@ node scripts/anim.mjs video 我的片子            # 出成片 → out/我的�
 ### 写错会怎样：抛错，并点名
 
 这是刻意的设计 —— 镜头库的注释里写着理由：这个引擎最贵的 bug 全是"**写错了但画面照样出**"
-（`src/shots/index.js`、`docs/IMPROVEMENTS-2.md`）。下面四条是从 `src/tasks.js` → `src/timeline.js`
+（`src/shots/index.js`、`docs/history/IMPROVEMENTS-1-3.md`）。下面四条是从 `src/tasks.js` → `src/timeline.js`
 （`configToCut`）→ `src/shots/index.js`（`shot`）三层包装后的**真实报错形状**，只有"写错的那个名字"是举例：
 
 **① 模板名写错** —— `{ type: 'chart2', dur: 5 }`：

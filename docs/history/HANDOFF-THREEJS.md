@@ -1,5 +1,8 @@
 # HANDOFF —— 把 Three.js 接进 anim（给下一个会话）
 
+> **📦 已归档（2026-10-07）**：原在 `docs/HANDOFF-THREEJS.md`，因为提案已全部落地，移入 `docs/history/`。
+> 归档目录的索引见 [`README.md`](./README.md)。
+>
 > ## ✅ 这份提案**已经落地**（2026-10，第十二轮）
 >
 > §1–§10 原样留着当**设计档与坑清单**，但别再把它读成"还没做"：
@@ -99,7 +102,7 @@ three 镜头：
 |---|---|---|
 | 做法 | `new THREE.WebGLRenderer({ canvas: offscreen })` 自己一个上下文；渲完把 canvas 用 `texImage2D` 上传进引擎的纹理 | `new THREE.WebGLRenderer({ context: animGL.ctx })`，纹理直接共享 |
 | 代价 | 每帧一次 1080p 拷贝（离线渲染无所谓） | 无拷贝 |
-| 风险 | 低。边界干净，两边互不知道对方 | **高**：Three.js 与引擎各自管 GL 状态（绑定、混合、viewport、VAO、program），互相污染是这类集成最经典的坑 —— **不报错，只是画面诡异**（和 `docs/STATUS.md` §13.4 那三个"静默失效"同一类） |
+| 风险 | 低。边界干净，两边互不知道对方 | **高**：Three.js 与引擎各自管 GL 状态（绑定、混合、viewport、VAO、program），互相污染是这类集成最经典的坑 —— **不报错，只是画面诡异**（和 `docs/history/STATUS-rounds-1-6.md` §13.4 那三个"静默失效"同一类） |
 | 建议 | ✅ **先做这个**，把链路跑通 | 要追性能时再考虑，并且必须配一个"状态隔离"的量具 |
 
 ---
@@ -364,4 +367,4 @@ sodium 现在的基线就是 12 个中段时刻（`out/sodium/hashes.json`，126
 比盯着代码读快一个数量级。
 
 **同理，本文档 §10 那五条假设，做之前先各造一个小实验证伪** ——
-别信"听起来合理"（`docs/STATUS.md` §12.4.5 / §14.5 各栽过一次）。
+别信"听起来合理"（`docs/history/STATUS-rounds-1-6.md` §12.4.5 / §14.5 各栽过一次）。

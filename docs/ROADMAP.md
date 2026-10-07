@@ -198,7 +198,7 @@ export default {
   - 「按锚点写一行字」和「整行淡入」这两个高频坑（`TextKit.write` 的 `align` 对每个字生效，
     整行要用 `type.writeLine(..., { anchor })`；`alpha` 的语义是**数值型 = 常量不透明度、
     `[a0,a1]` = 随 `t` 淡入**，只有 `stagger > 0` 或数组型 `alpha` 才走逐字动画
-    —— 曾经数值型 `alpha` 会让整个字形**不画**，那是 P0-1，已修，见 `STATUS.md` §11.1）
+    —— 曾经数值型 `alpha` 会让整个字形**不画**，那是 P0-1，已修，见 `history/STATUS-rounds-1-6.md` §11.1）
     → 参考 `tasks/nekohome/scenes/_kit.js` 的 `put()` / `fade()`。
 
 ---
