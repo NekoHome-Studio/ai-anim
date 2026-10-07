@@ -40,7 +40,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseCmdline, probeDuration, probeSpeechEnd, readTaskAudioSpec, run, tryRun, taskRel } from './media.mjs';
@@ -389,13 +389,22 @@ export function synthLine(driver, { file, text, voice, rate, force = false }) {
      * 第一版直接把这句当致命错误抛出，于是 27 句跑到第 23 句整个命令挂掉
      * —— 而"重新跑一次"就能过（缓存会把前面 22 句跳过）。这里自己重试两次。
      */
+    /**
+     * ⚠ 判据必须**看文件大小**，不能只看 `existsSync`（`docs/IMPROVEMENTS-4.md` §6 A）：
+     *   edge-tts 会偶发"退出码 0、却写出 0 字节的 mp3"（optifine 那轮有一条 `outro-2.mp3`
+     *   就是 0 字节，命令继续往下跑，直到混音/时长表拿它没辙才暴露）。
+     *   0 字节 = 这次合成事实上失败了 —— 删掉重试，绝不把空文件当成功。
+     */
+    const okFile = (f) => { try { return existsSync(f) && statSync(f).size > 0; } catch { return false; } };
     const attempt = (withWords, tries) => {
       let out = null;
       for (let i = 0; i < tries; i++) {
+        // 上一轮留下的 0 字节残骸先清掉：留着会让"文件在不在"这类判断失真
+        if (existsSync(file) && !okFile(file)) { try { rmSync(file, { force: true }); } catch { /* ignore */ } }
         out = run(withWords
           ? [...base, '--write-words', wordsFile, '--write-media', file]
           : [...base, '--write-media', file]);
-        if (out.status === 0 && existsSync(file)) return out;
+        if (out.status === 0 && okFile(file)) return out;
         if (i + 1 < tries) sleepSync(600 * (i + 1));
       }
       return out;
@@ -418,9 +427,13 @@ export function synthLine(driver, { file, text, voice, rate, force = false }) {
     } else {
       r = attempt(false, 3);
     }
-    if (r.status !== 0 || !existsSync(file)) {
+    if (r.status !== 0 || !okFile(file)) {
+      const bytes = existsSync(file) ? statSync(file).size : -1;
+      const why = r.status !== 0
+        ? `exit ${r.status}`
+        : `退出码 0 但音频只有 ${bytes} 字节（TTS 事实上没出声，已重试仍然如此）`;
       const tail = (r.stderr || r.stdout).trim().split(/\r?\n/).slice(-5).join('\n');
-      throw new Error(`TTS 合成失败（exit ${r.status}）：${text}\n${tail}`);
+      throw new Error(`TTS 合成失败（${why}）：${text}\n${tail}`);
     }
     writeFileSync(stamp, want);
   }

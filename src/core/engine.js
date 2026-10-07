@@ -20,6 +20,7 @@ import { P as DEFAULT_PALETTE } from './palette.js';
 import { Scene as SceneBase, frameSeed } from './scene.js';
 import { TextKit } from './text.js';
 import { makeNarration, makeNarrationReader } from './narration.js';
+import { makeCaptionLayer, resolveCaptionStyle } from './captions.js';
 import { SILENT } from './audio.js';
 import * as U from './util.js';
 
@@ -77,8 +78,30 @@ export class Engine {
      * 是一个"永远返回 null"的空实现，所以场景里可以无条件写 `ctx.narration.at(f.t)`。
      */
     this.narration = makeNarrationReader(null);
+    /**
+     * 风格包（`docs/STYLE.md`）：由 `src/tasks.js` 用 `resolveStyle()` 解析好传进来。
+     * 形状见 `src/style/index.js`；`null` = 没有风格概念的老行为（等价于 `print`）。
+     */
+    this.style = null;
+    /**
+     * 引擎级**字幕层**（`task.captions` 打开时非 null）。
+     * 建在 `load()` 里（那时才知道 W/H/P/narration），每帧在**后处理之后**画一次。
+     */
+    this.captions = null;
+    /** 字幕专用的 Canvas2D 图层（与调试 HUD 分开：两者开关独立、生命周期独立）。 */
+    this.cap2d = null;
     /** 装载期的错误（setup 失败、共享背景建不出来、--only 写错…） */
     this.errors = [];
+    /**
+     * 运行期的**警告**（不是错误）：kit 的版面冲突（`assertInBand`）、
+     * 说明条写成了句子（`captionNote` 太长）之类。
+     *
+     * 单独一条通道的理由：这些东西**每一帧都会发生**，走 `console.warn` 会刷屏，
+     * 而 `check` 又必须看得到它们（"不报错但画面错"是这仓库最贵的一类 bug）。
+     * 场景侧通过 `ctx.warnings` 拿到同一个数组。
+     * @type {string[]}
+     */
+    this.warnings = [];
     /**
      * **场景 render 抛的异常**，结构化记着（段名 / 时刻 / 帧号 / 栈）。
      *
@@ -144,6 +167,39 @@ export class Engine {
       narrReady ? narrSpec : makeNarration(narrSpec, { duration: this.duration }),
     );
     this.hudInfo.title = spec.title ?? '';
+    /**
+     * 风格包（`docs/STYLE.md`）：`style: 'paper'` 一行换掉整片观感。
+     *
+     * 解析（`resolveStyle`）在 `src/tasks.js` 里做 —— 那里能把"哪个文件写错了"带进报错。
+     * 引擎这边只负责用：`ctx.style` 给场景、`style.grid` 给字幕带与 kit 元件、
+     * `style.post` 作为后处理基线、`style.fonts` 注入字体栈（见 `applyStyleFonts()`）。
+     *
+     * 颜色（`style.palette`）不在这里合并：`P` 必须在 `new Engine()` 之前定好
+     * （`Post` 构造时就把调色板常量注进 shader 源码了），所以 `src/app.js` 负责合成。
+     */
+    this.style = spec.styleResolved ?? spec.style ?? null;
+
+    /**
+     * 字幕层：`task.captions` 打开时建。
+     *
+     * ⚠ 默认**关**：老任务不写 `captions` 就一个像素都不变（编年体验：字幕以前是出锅之后
+     * 用 ffmpeg 烧的，见 `docs/CAPTIONS.md`）。开了之后场景里一行都不用写 ——
+     * 引擎每帧自动画"此刻该显示的那句旁白"。
+     */
+    {
+      const capStyle = resolveCaptionStyle(this.style, spec.captions);
+      this.captions = capStyle
+        ? makeCaptionLayer({
+          narration: this.narration,
+          style: capStyle,
+          P: this.P,
+          W: this.gl.w,
+          H: this.gl.h,
+          grid: this._scaledGrid(),
+        })
+        : null;
+      if (this.captions && !this.cap2d) this.cap2d = new Layer2D(this.gl);
+    }
     /**
      * 全片共享的背景 Pass（`task.worldPass(ctx)` 的返回值）。
      *
@@ -227,7 +283,43 @@ export class Engine {
     } else {
       this.worldError = `(spec.worldPass 是 ${spec.worldPass === null ? 'null' : typeof spec.worldPass}，task.world 没有传到引擎)`;
     }
+    // 风格包的字体栈要**在所有图层建好之后**注入（每段场景各有一个 TextKit 实例）
+    this.applyStyleFonts();
     return this;
+  }
+
+  /**
+   * 把风格包的字体栈注入每一个 Canvas2D 图层（HUD / 字幕 / 每段自己的图层）。
+   *
+   * 为什么值得单列一个方法：模板与场景里写的都是**逻辑名**（`family: 'sans'`），
+   * 真正的字体栈在 `TextKit.families` 上。所以换风格时"全片连标题带字幕一起换字体"
+   * 只需要改这一处映射 —— 8 个镜头模板一行都不用动。
+   *
+   * ⚠ 一段的图层可能在 `load()` 之后才建（`--only`、懒加载），所以 HUD 与字幕层
+   * 每次都要重刷；`import` 进来的老任务没写 `style.fonts` 时这里是空操作（零像素变化）。
+   */
+  applyStyleFonts() {
+    const fonts = this.style?.fonts;
+    if (!fonts || !Object.keys(fonts).length) return this;
+    this.hud2d?.type?.setFamilies?.(fonts);
+    this.cap2d?.type?.setFamilies?.(fonts);
+    for (const it of this.timeline) it._layer?.type?.setFamilies?.(fonts);
+    return this;
+  }
+
+  /** 风格栅格按实际分辨率缩放后的版本（风格里的数字都是 1920×1080 基准）。 */
+  _scaledGrid() {
+    const g = this.style?.grid;
+    if (!g) return null;
+    const k = this.gl.h / 1080;
+    if (Math.abs(k - 1) < 1e-6) return g;
+    const s = (v) => Math.round(v * k);
+    return {
+      ...g,
+      pad: s(g.pad), top: s(g.top), footerLineY: s(g.footerLineY), footerY: s(g.footerY),
+      captionLineY: s(g.captionLineY), captionY: s(g.captionY), contentBottom: s(g.contentBottom),
+      captionBand: [s(g.captionBand[0]), s(g.captionBand[1])],
+    };
   }
 
   /** 检查时间线本身的问题（重叠顺序、空档、越界）。 */
@@ -285,6 +377,25 @@ export class Engine {
       text: item._layer ?? this.hud2d, type: (item._layer ?? this.hud2d).type,
       lines: this.lines, music: this.music, lyrics: this.lyrics,
       narration: this.narration,
+      /**
+       * 运行期警告通道（同一个数组实例）：kit 元件发现"文字压进字幕带"、
+       * "说明条写成了句子"这类问题时 push 到这里，`check` 会打印出来。
+       * 用 `ctx.warnings.push(...)` 而不是 `console.warn` —— 前者每帧都发生也不会刷屏。
+       */
+      warnings: this.warnings,
+      /**
+       * 此刻该显示的那句旁白 + 字幕保留带（`docs/CAPTIONS.md`）。
+       * `active(t)` / `band` / `style` —— 场景用它来**避让**（字幕带是引擎保留区）。
+       * 没开字幕时是一个安全空实现，所以场景可以无条件写 `ctx.captions?.band`。
+       */
+      captions: this.captions ?? {
+        active: () => null, lines: [], style: null,
+        band: { x0: 0, x1: this.gl.w, y0: this.gl.h - 94, y1: this.gl.h - 26 },
+      },
+      /** 风格包（见 `src/style/index.js`）：`palette` / `grid` / `post` / `captions` / `motif` */
+      style: this.style,
+      /** 风格栅格（已按分辨率缩放）：kit 元件与场景排版用它，别再自己写 120 / 964 这类魔数 */
+      grid: this._scaledGrid(),
       params: f.params, W: this.gl.w, H: this.gl.h,
       start: item.start, end: item.end, item,
       util: U, rng: U.rng,
@@ -303,6 +414,16 @@ export class Engine {
     let under = null;
     let outTex = null;
     let post = { ...DEFAULT_POST };
+    /**
+     * 风格包的后处理**基线**（`docs/STYLE.md`）。
+     *
+     * 合并顺序是 `DEFAULT_POST → item.post → 场景 return 的 post → style.post`，
+     * 也就是风格的这几项**最后生效**。为什么让它盖过模板：风格里的 bloom/grain/vignette
+     * 描述的是**介质**（"这是纸、这是磷光屏"），不是某个镜头的设计 ——
+     * 浅底风格（`paper`）如果不把 bloom 压下来，整片会糊成一片白。
+     * 反过来，`print`（默认风格）的 `post` 是空对象，所以老任务一个像素都不变。
+     */
+    const stylePost = this.style?.post ?? null;
 
     for (let k = 0; k < items.length; k++) {
       const item = items[k];
@@ -373,8 +494,8 @@ export class Engine {
       let drewErrorCard = false;
       try {
         const ov = scene.render(ctx);
-        if (ov && typeof ov === 'object') post = { ...post, ...(item.post ?? {}), ...ov };
-        else if (item.post) post = { ...post, ...item.post };
+        if (ov && typeof ov === 'object') post = { ...post, ...(item.post ?? {}), ...ov, ...stylePost };
+        else if (item.post) post = { ...post, ...item.post, ...stylePost };
       } catch (err) {
         /**
          * 场景抛错 = **硬错误**，绝不能画一帧意思不明的纯色糊过去
@@ -398,7 +519,7 @@ export class Engine {
         // ⚠ 后处理参数必须**回到默认**：错帧卡片不能继承上一段/上一帧的调色、暗角、泛光，
         //   否则"亮红框 + 暗红底"会被压成一片灰暗红，一眼看不出是崩了（实测边框被暗角
         //   从 (242,41,41) 压到 (106,22,22)，等于把"明显的错"变成"奇怪的底色"）。
-        post = { ...DEFAULT_POST };
+        post = { ...DEFAULT_POST, ...stylePost };
         this._errorCard(rt, item, item.id, t, idx, msg);
         drewErrorCard = true;
         this.gl.paint.markError = true;
@@ -614,6 +735,8 @@ export class Engine {
     if (this.dumpStages) this._dumpStages(outTex, post);
     this.post.render(gl, this._hudOut ?? outTex, this.outRT, post, frameSeed(idx));
     this.lastPost = post;
+    // 字幕：**后处理之后**叠上去（信息层，见 _drawCaptions 的注释）
+    if (this.captions) this._drawCaptions(t);
     if (opts.toScreen !== false) {
       gl.blitPass.u.src.value = { tex: this.outRT.tex, __tex: true };
       gl.blitPass.render(gl, null, t, 1 / this.fps);
@@ -705,6 +828,37 @@ export class Engine {
   }
 
   /* ------------------------------------------------------------ HUD */
+
+  /**
+   * 字幕层：把"此刻该显示的那句旁白"画到 `outRT` 上（**后处理之后**）。
+   *
+   * 两件刻意做的事：
+   *   ① **不吃后处理**。字幕是信息层，让它过泛光/颗粒/色差会把字糊掉
+   *      （引擎自己的经验规则是"骨白正文永远不要 bloom"），可读性优先于质感统一。
+   *   ② **没画东西就不 upload**。Canvas2D 图层的纹理是第一次 `upload()` 才分配的，
+   *      没画过就调 `comp.draw`，采样出来是未定义的（见 composite 里那段警告）。
+   */
+  _drawCaptions(t) {
+    const layer = this.cap2d;
+    if (!layer || !this.captions) return null;
+    const { W, H } = this.gl;
+    const c = layer.ctx;
+    c.save();
+    c.setTransform(layer.scale, 0, 0, layer.scale, 0, 0);
+    c.clearRect(0, 0, W, H);
+    let line = null;
+    try {
+      line = this.captions.draw(layer, t);
+    } catch (err) {
+      // 字幕画挂了不该让整帧崩（它是附加层）：记进 errors，check 会报出来
+      this.errors.push(`[字幕] t=${t.toFixed(3)} 出错: ${fmtErr(err)}`);
+    }
+    c.restore();
+    if (!line) return null;
+    layer.upload();
+    this.comp.draw(this.gl, layer, this.outRT, { premult: false });
+    return line;
+  }
 
   /**
    * HUD 画在一张独立的 HDR 目标上（先拷贝场景成帧再叠字），
@@ -885,6 +1039,8 @@ export class Engine {
   dispose() {
     this.lines?.dispose?.();
     this.hud2d.dispose();
+    // 字幕层是独立的图层，别漏了释放（它只在 captions 打开时才建）
+    this.cap2d?.dispose();
     for (const it of this.timeline) {
       it._layer?.dispose();
       it._scene?.dispose?.();

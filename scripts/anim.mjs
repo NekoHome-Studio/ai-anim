@@ -90,7 +90,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, statSync, openSync, closeSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { chromium } from 'playwright-core';
 // 抖动统计（纯函数，无依赖）：`anim shake` 与 `video` 收尾的守门共用同一套判据
@@ -168,6 +168,15 @@ function pickTask() {
 /* ------------------------------------------------------------------ 浏览器会话 */
 
 let session = null;
+/**
+ * 会话开始时的源文件 mtime 快照（`docs/IMPROVEMENTS-4.md` §3）。
+ *
+ * 为什么要它：渲染期写了仓库里的文件 → 私有 Vite 触发 HMR → 整页重载 → 页面里的引擎状态没了
+ * → 下一次 `page.evaluate` 抛 `Cannot read properties of undefined (reading 'stats')`。
+ * **报错里没有一个字提到"文件被改了"**，为此白跑过一轮 40 秒的 check，还差点误判成"场景写出了 NaN"。
+ * 有了这份快照，失联时就能直接点名是哪个文件在几点被改的。
+ */
+let sessionWatch = null;
 
 async function portReady(url, timeoutMs = 40000) {
   const t0 = Date.now();
@@ -187,6 +196,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {{ task: string, scale?: number, only?: string, offline?: boolean }} o
  */
 async function openSession(o) {
+  // 先留一份源文件 mtime 基线：页面中途失联时用它点名"是谁在渲染期间写了文件"（IMPROVEMENTS-4 §3）
+  sessionWatch = sourceMtimes();
   // scale > 1 = 真 4K。曾经因为 LineBatch 在 SCALE>1 下不出图而被整体拒绝；
   // 根因已定位并修好（顶点着色器用物理分辨率换算裁剪空间，见 gl.js 的 LineBatch VS），
   // 现在 scale 1..4 都可用。
@@ -259,6 +270,9 @@ async function openSession(o) {
   const params = new URLSearchParams({ task: o.task, offline: o.offline === false ? '0' : '1' });
   if (o.scale) params.set('scale', String(o.scale));
   if (o.only) params.set('only', o.only);
+  // `--style paper`：临时换风格出图/预览（不改任务文件）。
+  // 用途就一个 —— **一眼对比**："同一段画面在几套风格下各长什么样"（docs/STYLE.md）。
+  if (opt('style', '')) params.set('style', String(opt('style')));
   params.set('hud', '0');
 
   await page.goto(`${url}/?${params}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -526,6 +540,45 @@ function changedSources(before, after) {
   }
   for (const [f] of before) if (!after.has(f)) out.push(`${path.relative(ROOT, f)}（删除）`);
   return out;
+}
+
+/**
+ * 包一层 `page.evaluate`：页面失联时给一条**可读诊断**，并点名渲染期间被改过的源文件。
+ *
+ * 背景（`docs/IMPROVEMENTS-4.md` §3）：渲染期写文件 → Vite HMR 整页重载 → 页面里那个装着引擎
+ * 状态的全局对象没了 → 下一次 `page.evaluate` 抛的是
+ * `TypeError: Cannot read properties of undefined (reading 'stats')`。
+ * 这句话指向"stats 读不到"，让人往"场景写出了 NaN / 段名写错"上查 —— 方向完全错。
+ *
+ * 现在：失败时对比 mtime 快照，直接列出"最近被改过的源文件"，并说明规则
+ * （**只要有一场渲染在跑，仓库里一个文件都别写**；并发子代理的产出先落 `out/_staging/`）。
+ * 没检测到改动时也会说清楚 —— 那就是页面自己崩了，去看控制台。
+ *
+ * @param {Function} fn 传给 page.evaluate 的函数
+ * @param {any} [arg]
+ * @param {string} [what] 出错时显示"在做什么"（默认就是 page.evaluate）
+ */
+async function evaluateSafe(fn, arg, what = 'page.evaluate') {
+  try {
+    return await session.page.evaluate(fn, arg);
+  } catch (err) {
+    const head = String(err && err.message ? err.message : err).split('\n')[0];
+    const changed = changedSources(sessionWatch, sourceMtimes());
+    const lines = [`页面在 ${what} 时失联：${head}`];
+    if (changed.length) {
+      lines.push('  ⚠ 渲染期间有源文件被改动 —— 私有 Vite 会因此 HMR 整页重载，页面里的引擎状态就没了。');
+      lines.push('     （规则：只要有一场渲染在跑，仓库里**一个文件都别写**；并发子代理的产出先落 out/_staging/。）');
+      for (const c of changed.slice(0, 8)) lines.push(`     · ${c}`);
+      if (changed.length > 8) lines.push(`     · …另有 ${changed.length - 8} 个`);
+      lines.push('  → 让所有写文件的动作停手，然后重跑这条命令。');
+    } else {
+      lines.push('  没有检测到源文件改动 —— 更像页面自己崩了（GPU 掉线 / shader 编译超时 / OOM）。');
+      lines.push('  先看上面打印的浏览器控制台错误，必要时用 --url 挂到手动 npm run dev 的页面上复现。');
+    }
+    const e = new Error(lines.join('\n'));
+    e.readable = true;
+    throw e;
+  }
 }
 
 /**
@@ -817,6 +870,36 @@ async function cmdCheck() {
   const statics = scanScenes(task);
   for (const s of statics) warn(`⚠ ${s}`);
 
+  // 1.5) 静态：**画面文字逐字复述旁白**（`docs/CAPTIONS.md`）。
+  //
+  // 为什么放在 check 里：观众对 sodium 的反馈是"两条字幕同时出现（页面介绍 + 语音字幕）
+  // 看着好迷糊"，而逐字比对发现那支片子 43 句旁白里有 12 句被抄成了画面说明条
+  // （optifine 3 句、beast 0 句）。这类重复在**渲染上看不出任何异常** —— 画面照样出、
+  // 亮度照样正常，只有把两边文本对一遍才发现得了。
+  //
+  // ⚠ 只 warn 不 fail：已经交付的片子（sodium/optifine）必然命中，让 check 非零退出
+  //   会把回归清单永久染红，反而没人看了。要卡死就在交付自检里跑那条命令（AGENTS.md §10.9）。
+  {
+    try {
+      const { spawnSync } = await import('node:child_process');
+      const lint = path.join(ROOT, 'tools', 'lint-narration-dup.mjs');
+      if (existsSync(lint)) {
+        const r = spawnSync(process.execPath, [lint, task], { encoding: 'utf8', timeout: 30000 });
+        const txt = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+        if (r.status === 1) {
+          warn('⚠ 画面文字在复述旁白 —— 同屏两套完整句子就是观众说的"两条字幕"：');
+          for (const line of txt.split(/\r?\n/).slice(0, 12)) warn(`  ${line}`);
+          warn('  → 画面只留标注（名词 / 数字 / 单位 / 出处），句子交给旁白与字幕；见 docs/CAPTIONS.md');
+        } else if (r.status === 2) {
+          warn(`⚠ lint-narration-dup 没跑成：${String(txt).split(/\r?\n/)[0]}`);
+        }
+      }
+    } catch (err) {
+      // 受限沙箱里 spawn 可能被拒（EPERM）：这不是 check 的失败，说一句就好
+      warn(`（旁白复述检查跳过：${String(err && err.message ? err.message : err).split('\n')[0]}）`);
+    }
+  }
+
   // 2) 试渲染每一段的三个采样点（有 GPU 就能立刻抓到 shader 编译错误和 NaN）
   await openSession({ task, only: opt('only', undefined) });
   try {
@@ -834,11 +917,55 @@ async function cmdCheck() {
     const tracks = resolveAudioTracks(task);
     if (tracks.analysisSource) log(`音频：${tracks.note}`);
 
+    // 风格包与字幕层（docs/STYLE.md / docs/CAPTIONS.md）—— 这两件事以前"没有任何入口"，
+    // 于是每支片子都长得像上一支、而语音字幕干脆不在引擎里（出锅之后才用 ffmpeg 烧）。
+    // check 把它们打出来，是为了让"这支片子长什么样"变成一件**看得见**的事。
+    if (info.style) {
+      log(`风格：${info.style.name}（${info.style.label}）· 背景母题 ${info.style.motif}`
+        + (info.style.fonts ? ` · 自定义字体 ${info.style.fonts} 族` : ''));
+    }
+    if (info.captions?.on) {
+      const b = info.captions.band;
+      log(`字幕：引擎字幕层已开 · 保留带 y ${b.y0}–${b.y1} / x ${b.x0}–${b.x1}`
+        + ` · 说完再留 ${info.captions.hold}s${info.captions.karaoke ? ' · 逐词高亮（研究上属负效应，慎用）' : ''}`);
+    } else if (info.narrationLines > 0) {
+      warn(`⚠ 这支片子有 ${info.narrationLines} 句旁白，但**没开字幕层** —— 观众看不到语音字幕。`);
+      warn('  → task.config.mjs 里加一行 captions: true（用法与理由见 docs/CAPTIONS.md）。');
+      warn('  → 以前字幕是出锅后用 ffmpeg 烧的，生成脚本还在 out/_staging/（out/ 会被 clean 清掉）。');
+    }
+    for (const w of info.warnings ?? []) warn(`⚠ ${w}`);
+
+    // 字幕会不会**跨越场景切换**？（`docs/CAPTIONS.md`）
+    //
+    // 依据是 Netflix 的 timed-text 规范：「字幕不得跨越场景切换」—— 换镜头可以，
+    // 换场景不行。出图时才发现的实例：`_style-sampler` 第一版旁白表里 4 句**全都**跨了段，
+    // 于是每一段开头都会看到上一句字幕还在淡出（同一屏上两句字）。
+    // 片尾最后一句豁免（画面结束在它后面，没有"下一个场景"）。
+    if (info.captions?.on && (info.narration ?? []).length) {
+      const hold = info.captions.hold ?? 1.06;
+      const segs = info.timeline ?? [];
+      const crossed = [];
+      for (const l of info.narration) {
+        const seg = segs.find((it) => l.start >= it.start - 1e-6 && l.start < it.end);
+        if (!seg || seg === segs[segs.length - 1]) continue;
+        const until = l.end + hold;
+        if (until > seg.end + 0.05) crossed.push({ l, seg, until });
+      }
+      if (crossed.length) {
+        warn(`⚠ ${crossed.length} 句字幕**跨越了场景切换**（规范要求字幕不得跨 scene change）：`);
+        for (const c of crossed.slice(0, 6)) {
+          warn(`  [${c.l.id}]「${String(c.l.text).slice(0, 18)}…」说到 ${c.l.end.toFixed(1)}s，`
+            + `加上停留要到 ${c.until.toFixed(1)}s 才消失，而 ${c.seg.id} 段在 ${c.seg.end.toFixed(1)}s 就切走了`);
+        }
+        warn('  → 让这句说早一点 / 说短一点，或者把这一段放长（段长本来就该由旁白决定，docs/NARRATION.md）');
+      }
+    }
+
     // 背景守门（P0-2）：先问页面里有没有"声明了 handlesTransition 却没画共享背景"的段。
     // 那类段的底会是纯黑，而亮度统计抓不到（文字/面板/grain 自己就有亮度）。
     let world = null;
     try {
-      world = await session.page.evaluate(() => /** @type {any} */ (window).__anim.worldAudit());
+      world = await evaluateSafe(() => /** @type {any} */ (window).__anim.worldAudit(), undefined, 'worldAudit()');
       const risky = (world?.results ?? []).filter((r) => r.handlesTransition || r.declaredWorld !== 'none');
       if (world?.results?.length) {
         const missing = world.results.filter((r) => r.missing);
@@ -857,12 +984,14 @@ async function cmdCheck() {
         }
       }
     } catch (err) {
+      if (err && err.readable) throw err;      // 页面失联：照实抛出，不要吞成"背景守门不可用"
       log(`\n（背景守门不可用：${String(err && err.message ? err.message : err).split('\n')[0]}）`);
     }
 
     const t0 = Date.now();
-    const statsAt = (t, opts) => session.page.evaluate(
+    const statsAt = (t, opts) => evaluateSafe(
       ([tt, oo]) => /** @type {any} */ (window).__anim.stats(tt, oo), [t, opts],
+      `stats(t=${t.toFixed(2)}s)`,
     );
     // --quick：每段只在 50% 采一个点、只跑单子帧。用于**快速冒烟**（改完引擎先扫一遍
     // 「有没有哪一段直接抛异常」），不替代完整 check —— 它不看多子帧路径、也不看入场头 1 秒。
@@ -887,6 +1016,8 @@ async function cmdCheck() {
             // ⚠ 必须在跑完这一帧之后、跑 samples:1 之前取：lastSamples 会被下一次渲染覆盖
             used = await session.page.evaluate(() => /** @type {any} */ (window).__anim.lastSamples);
           } catch (err) {
+            // 页面失联（HMR 重载 / 崩了）是**致命**诊断，别降级成"多子帧不可用"混过去
+            if (err && err.readable) throw err;
             multiNote = `  ← 多子帧不可用：${String(err && err.message ? err.message : err).split('\n')[0]}`;
           }
         }
@@ -2203,7 +2334,17 @@ async function printEstimate({ info, from, to, fps, samples, shutter, label }) {
  */
 async function renderSegments({ task, info, out, from, to, fps, samples, shutter, audioFile, withAudio }) {
   const segStart = Date.now();
-  const target = Math.max(0.5, Number(opt('segments', '10')));
+  // 目标块时长（秒）。默认 15：块间有固定开销（重连浏览器 + 下发推流参数），块越小越亏 ——
+  // optifine 那次 `--segments 8` 在 254 秒的片子上切了 35 块，每块开头都要重连一次
+  // （`docs/IMPROVEMENTS-4.md` §6 C 给的经验值：块数 ≈ 时长 / 15）。
+  //
+  // ⚠ 裸 `--segments`（后面不跟数字）时 `opt()` 返回 undefined → `Number(undefined)` = NaN，
+  //   而 NaN 会一路传进 planSegmentCuts 让每块的边界都变成 NaN（画面全黑且不报错）。
+  //   这里必须兜住：拿不到有限正数就退回默认值。
+  const target = (() => {
+    const v = Number(opt('segments', '15'));
+    return Number.isFinite(v) && v > 0 ? Math.max(0.5, v) : 15;
+  })();
   const segDir = path.join(path.dirname(out), `${path.basename(out, '.mp4')}.parts`);
   mkdirSync(segDir, { recursive: true });
 
@@ -2351,7 +2492,13 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
     die(
       `产物验收不通过，已删除 ${path.relative(ROOT, out)}：\n` +
       bad.map((b) => `  · ${b}`).join('\n') + '\n' +
-      `  各块本身都通过了守门，所以问题在拼接/封装这一步。已渲好的块会保留，修完重跑即可。`,
+      // ⚠ 措辞按「已知 / 未知」分开（`docs/IMPROVEMENTS-4.md` §1.5）：这一步是**确定性**的，
+      //   写"重跑即可"会把人指偏（那一次照着重跑一遍，白等 30 秒，还是 −3 帧）。
+      `  各块本身都通过了守门，所以问题出在**拼接 / 封装**这一步。\n` +
+      `  这一步是确定性的：**同一条命令重跑会得到同样的结果**，重跑解决不了。已渲好的块会保留，改完再跑。\n` +
+      `  两个已知原因：① 音轨封装用了 -shortest 却没有 -af apad —— AAC 的记账时长比视频短几十毫秒，\n` +
+      `     于是视频尾巴被切掉几帧；② concat 拼接没带 -copyts —— 帧数对但时间戳不均匀。\n` +
+      `  先看上面那条 ffprobe 差了几帧、差在哪个方向，再对号入座。`,
     );
   }
 
@@ -2359,6 +2506,9 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
   log(`\n✓ ${path.relative(ROOT, out)}`);
   log(`  ${frames} 帧（${chunks.length} 块拼接，ffprobe 复核通过），用时 ${((Date.now() - segStart) / 1000).toFixed(1)}s`);
   log(`  文件大小 ${(st.size / 1048576).toFixed(1)} MB`);
+  // `--segments` 才是中间产物的**大头**（optifine 那次 11.2 GB），而这一段以前从不提示清理
+  // （`docs/IMPROVEMENTS-4.md` §6 E：报告里只有直播路径挂了它）。
+  reportIntermediates(task, out);
   // 抖动守门（只对本次重新渲过的块有数据；跳过的旧块不计入）
   if (shakeAll.length) reportShake(analyzeShake(shakeAll, { fps, checkTail: to >= info.duration - 1e-6 }), task);
   return { frames };
@@ -2666,7 +2816,11 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
   } else {
     args.push('-preset', opt('preset', 'medium'), '-crf', opt('crf', withAudio ? '16' : '20'));
   }
-  if (withAudio) args.push('-c:a', 'aac', '-b:a', '320k', '-shortest');
+  // ⚠ `-shortest` 必须与 `-af apad` 成对（`docs/IMPROVEMENTS-4.md` §1）：AAC 封装有
+  //   priming/padding，音频流的记账时长会比视频**短几十毫秒**，单独用 `-shortest` 会把
+  //   视频尾巴切掉几帧（optifine 那次 −3 帧就是这么来的）。`apad` 把音轨补成无限长（补静音），
+  //   于是 `-shortest` 必然停在视频最后一帧上：音轨短了补齐、长了切掉，视频一帧不丢。
+  if (withAudio) args.push('-c:a', 'aac', '-b:a', '320k', '-af', 'apad', '-shortest');
   args.push('-movflags', '+faststart', out);
 
   const ffCmd = ffmpegCmd();
@@ -3559,7 +3713,8 @@ async function renderParallel({ task, info, out, from, to, fps, samples, shutter
       '-y', '-loglevel', 'error',
       '-i', stitched, '-ss', String(from), '-i', audioFile,
       '-map', '0:v:0', '-map', '1:a:0',
-      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '320k', '-shortest',
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '320k',
+      '-af', 'apad', '-shortest',        // ← 与 renderSegments 同一处坑，必须成对（IMPROVEMENTS-4 §1）
       '-movflags', '+faststart', out,
     ]);
   } else {
@@ -3721,6 +3876,166 @@ async function cmdShots() {
   }
 }
 
+/* ------------------------------------------------------------------ 命令：styles / subs */
+
+/**
+ * `anim styles` —— 列出全部风格包（`docs/STYLE.md`）。
+ *
+ * 为什么值得单独一条命令：风格是"整片观感"的开关，而它以前**没有任何入口**
+ * （审计结论：8 个镜头模板是 `demo` + `beat` 两支片子的逐像素冻结副本；默认调色板就是
+ * `tasks/pdoom-lab` 那一支的配色；三份入口文档印着同一段起手场景）。有了这张清单，
+ * "下一支换一套"才可能真的发生。
+ */
+async function cmdStyles() {
+  const { listStyles } = await import('../src/style/index.js');
+  const all = listStyles();
+  log(`风格包（src/style/，共 ${all.length} 套）—— task.config.mjs 里写 style: '<名字>' 就行\n`);
+  const w = Math.max(...all.map((s) => s.name.length));
+  for (const s of all) {
+    log(`  ${s.name.padEnd(w)}  ${s.label}   [背景母题 ${s.motif}]`);
+    log(`  ${' '.repeat(w)}  ${s.note}`);
+    log(`  ${' '.repeat(w)}  底色 ${s.palette.ink} · 正文 ${s.palette.bone} · 强调 ${s.palette.signal}`);
+    log('');
+  }
+  log('细则（合并优先级 / 反审美疲劳的两条纪律 / 每片必须换掉的三项）：docs/STYLE.md');
+  log('想看看同一段画面在几套风格下各长什么样：node scripts/anim.mjs still style-sampler -t 2,6,10');
+}
+
+/** 秒 → `HH:MM:SS,mmm`（SRT） */
+function srtTime(sec) {
+  const s = Math.max(0, sec);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = Math.floor(s % 60);
+  const ms = Math.round((s - Math.floor(s)) * 1000);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+}
+
+/** 秒 → `H:MM:SS.cc`（ASS，百分秒） */
+function assTime(sec) {
+  const s = Math.max(0, sec);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = Math.floor(s % 60);
+  const cs = Math.round((s - Math.floor(s)) * 100);
+  return `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+}
+
+/**
+ * 字幕断行：每行最多 `per` 个字（**Netflix 简体中文规范是 16 字/行、最多 2 行**），
+ * 先按标点贪心装；超过两行时在中点附近找标点切一刀，绝不把收尾标点留在行首。
+ */
+function wrapCaption(text, per = 16) {
+  const s = String(text);
+  if (s.length <= per) return [s];
+  const parts = s.match(/[^，。、；：！？]{1,}[，。、；：！？]?/g) ?? [s];
+  const rows = [];
+  let cur = '';
+  for (const p of parts) {
+    if (cur && (cur + p).length > per) { rows.push(cur); cur = ''; }
+    cur += p;
+  }
+  if (cur) rows.push(cur);
+  if (rows.length <= 2) return rows;
+  const mid = Math.ceil(s.length / 2);
+  let cut = -1;
+  for (let i = mid; i >= Math.max(1, mid - 10); i--) if ('，。、；：！？'.includes(s[i - 1])) { cut = i; break; }
+  if (cut < 0) for (let i = mid; i < Math.min(s.length, mid + 10); i++) if ('，。、；：！？'.includes(s[i - 1])) { cut = i; break; }
+  if (cut <= 0 || cut >= s.length) cut = mid;
+  return [s.slice(0, cut), s.slice(cut)];
+}
+
+/**
+ * `anim subs <任务>` —— 从旁白表导出 `.srt` / `.ass`（**给视频平台上传用**）。
+ *
+ * 为什么要有它：以前这一步是 `out/_staging/make-srt.mjs` —— 一个活在**渲染产物目录**里的
+ * 手抄脚本（`out/` 会被 `anim clean` 清掉、不在版本管理视野内、没有任何回归），
+ * 换一支片子就要再抄一份（optifine 与 sodium 各有一份，几乎逐字相同）。
+ * 现在它是 CLI 的一条命令，断行按 Netflix 简体中文规范（16 字/行、最多 2 行）。
+ *
+ * ⚠ 别和引擎内字幕叠着用：`task.captions: true` 时字幕**已经烧进画面**了，
+ *   再拿这份 `.ass` 过一遍 ffmpeg 就是两层字幕（观众反馈里"两条字幕"的一种）。
+ */
+async function cmdSubs() {
+  const task = pickTask();
+  const narPath = path.join(ROOT, 'tasks', task, 'audio', 'narration.json');
+  /** @type {any} */
+  let data = null;
+  /** task.config.mjs 导入失败的原因（有的话；别静默吞掉 —— 见下面的注释） */
+  let inlineErr = null;
+  if (existsSync(narPath)) {
+    try { data = JSON.parse(readFileSync(narPath, 'utf8')); } catch (e) {
+      die(`${path.relative(ROOT, narPath)} 读不动：${e.message}`);
+    }
+  } else {
+    // 内联写法：task.config.mjs 里直接写 narration: { lines: [...] }
+    //
+    // ⚠ 这里的 catch **不能**静默（本命令第一版就栽在这上面）：`pathToFileURL` 忘了 import
+    //   时抛的是 ReferenceError，被吞掉之后报出来的是"这个任务没有旁白表"——
+    //   方向完全错（任务明明有）。所以把原因留下来，报错时一起打。
+    try {
+      const cfg = path.join(ROOT, 'tasks', task, 'task.config.mjs');
+      const mod = await import(pathToFileURL(cfg).href);
+      const spec = mod.default ?? mod;
+      if (spec?.narration && typeof spec.narration === 'object') data = spec.narration;
+    } catch (err) {
+      inlineErr = String(err && err.message ? err.message : err).split('\n')[0];
+    }
+  }
+  const lines = (data?.lines ?? []).filter((l) => Number.isFinite(Number(l.start)) && Number(l.dur) > 0);
+  if (!lines.length) {
+    die(
+      `tasks/${task} 没有可用的旁白表（看 ${path.relative(ROOT, narPath)}，或 task.config.mjs 里的 narration）。\n` +
+      (inlineErr ? `  ⚠ task.config.mjs 导入失败：${inlineErr}\n` : '') +
+      `  有旁白的任务先用 anim say 生成：node scripts/anim.mjs say ${task}`,
+    );
+  }
+
+  const outDir = path.resolve(ROOT, opt('out', opt('o', path.join('out', task))));
+  mkdirSync(outDir, { recursive: true });
+  const base = path.join(outDir, `${opt('name', task)}`);
+  const per = Math.max(8, Number(opt('per', '16')) || 16);
+
+  let srt = '';
+  let ass = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: 1920',
+    'PlayResY: 1080',
+    'WrapStyle: 2',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    // Alignment=2 = 底部居中；MarginV=64 是离底边的距离；白字 + 深色描边（平台上传的通用观感）
+    'Style: Main,Microsoft YaHei,46,&H00FFFFFF,&H000000FF,&H00141414,&HA0000000,0,0,0,0,100,100,1,0,1,3,1,2,80,80,64,1',
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  ].join('\n');
+
+  let n = 0;
+  let tooLong = 0;
+  for (const l of lines) {
+    const a = Number(l.start);
+    // 说完之后再多留一点：规范建议对白结束后 +0.5s，读起来不赶
+    const b = a + Number(l.dur) + 0.5;
+    const rows = wrapCaption(String(l.text ?? ''), per);
+    if ([...String(l.text ?? '')].length / Math.max(0.1, Number(l.dur)) > 9) tooLong++;
+    n++;
+    srt += `${n}\n${srtTime(a)} --> ${srtTime(b)}\n${rows.join('\n')}\n\n`;
+    ass += `\nDialogue: 0,${assTime(a)},${assTime(b)},Main,,0,0,0,,${rows.join('\\N')}`;
+  }
+  ass += '\n';
+  writeFileSync(`${base}.srt`, srt, 'utf8');
+  writeFileSync(`${base}.ass`, ass, 'utf8');
+  log(`✓ ${path.relative(ROOT, `${base}.srt`)}  ${n} 条（每行 ≤${per} 字、最多 2 行）`);
+  log(`✓ ${path.relative(ROOT, `${base}.ass`)}  ${n} 条（底部居中，MarginV=64）`);
+  if (tooLong) {
+    warn(`⚠ 有 ${tooLong} 句的语速超过 9 字/秒（Netflix 简体中文的成人上限，建议按 8–9 校核）—— 观众读不完。`);
+  }
+  log('');
+  log('这份文件是给**视频平台上传**用的（软字幕）。');
+  log('⚠ 如果这支片子在 task.config.mjs 里开了 captions: true，字幕**已经烧进画面**了 ——');
+  log('  不要再把这份 .ass 过一遍 ffmpeg，否则就是两层字幕（docs/CAPTIONS.md）。');
+}
+
 /* ------------------------------------------------------------------ help */
 
 function help() {
@@ -3737,6 +4052,8 @@ const commands = {
   new: cmdNew,
   tasks: cmdTasks,
   shots: cmdShots,
+  styles: cmdStyles,
+  subs: cmdSubs,
   check: cmdCheck,
   still: cmdStill,
   sheet: cmdSheet,

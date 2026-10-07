@@ -83,6 +83,7 @@ npm run dev                                      # 浏览器实时预览（空�
 | [`tasks/demo/`](tasks/demo/) | **最小 hello-world**：16 秒、无音频，一支小片子该有的东西全在里面 —— 逐字入场、矢量线段、GLSL 背景、图表、甩镜转场、后处理 |
 | [`tasks/beat/`](tasks/beat/) | **音乐驱动**：镜头长度全部按拍号写（`dur: { beat: 24 }`），画面踩在拍上；波形、同心圆、频谱网格三种音频可视化 |
 | [`tasks/example-config-only/`](tasks/example-config-only/) | **零代码出片**：整个任务目录**只有 `task.config.mjs` 一个文件**，没有 `scenes/`、没有一行 `import` —— 时间线里直接写镜头模板 |
+| [`tasks/_style-sampler/`](tasks/_style-sampler/) | **风格采样器**：同一段时间线，五套风格。`node scripts/anim.mjs still _style-sampler -t 1.8,6,9.6 --style paper` —— 换一行就换一张脸（[`docs/STYLE.md`](docs/STYLE.md)） |
 | [`tasks/_calib/`](tasks/_calib/) | **标定夹具**：色彩空间、`xform`、`post.center`、任务自带字体、4K 核对的量具；它不是片子，是一把尺子 |
 | [`tasks/_three-lab/`](tasks/_three-lab/) | **Three.js 真网格沙盒**：同一个盒子换三种画法（Three.js 实体 / 引擎自己画 / 80 个实例化单元），全片一层背景、一台摄影机 |
 | [`tasks/_three-calib/`](tasks/_three-calib/) | **Three.js 桥的标定量具**：证明 Three.js 渲出的画面原样、正着、以正确的颜色进了引擎的合成器（判据是量出来的：`node tools/probe-three.mjs`） |
@@ -155,6 +156,8 @@ node scripts/anim.mjs analyze 我的片子      # 分析拍子/小节/段落/包
 |---|---|
 | `anim.mjs tasks` | 列出所有任务 |
 | `anim.mjs shots [名字]` | 列出镜头模板（A 档镜头库 `src/shots/`）与参数 |
+| `anim.mjs styles` | 列出**风格包**（`src/style/`）：一行 `style: 'paper'` 换掉整片观感（`docs/STYLE.md`） |
+| `anim.mjs subs [任务]` | 从旁白表导出 `.srt` / `.ass`（给平台上传；每行 ≤16 字，`docs/CAPTIONS.md`） |
 | `anim.mjs new <名>` | 新建任务骨架 |
 | `anim.mjs check [任务]` | 静态检查 + 逐段试渲染 + 亮度统计（**改完先跑这个**） |
 | `anim.mjs still <任务> -t 1,2.5` | 出单帧 PNG（看图的主要手段） |
@@ -246,6 +249,9 @@ docs/COOKBOOK.md   常见效果做法手册
 docs/CONFIG-ONLY.md 零代码出片：只写 task.config.mjs 的教程（B 档）
 docs/NARRATION.md  旁白/口播那一层（A/B/C 三档都已落地）
 docs/THREE.md      第 3 种 3D：Three.js 真网格镜头
+docs/STYLE.md      风格包：一行 style 换掉整片观感
+docs/BACKLOG.md    还没做的事 / 待你拍板（**唯一的待办清单**）
+docs/history/      归档：已完成的改进记录与交接单（索引见 docs/history/README.md）
 src/core/          引擎
 src/kit/           引擎自带的镜头工具（makeShot / 排版 / 版面元件 / 共享背景）
 src/shots/         A 档镜头库：title / chart / kinetic / whip / outro / wave / pulse / grid

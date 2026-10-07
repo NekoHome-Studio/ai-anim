@@ -11,6 +11,7 @@
 const configs = import.meta.glob('/tasks/*/task.config.mjs');
 
 import { makeNarration } from './core/narration.js';
+import { resolveStyle } from './style/index.js';
 
 /**
  * @typedef {Object} TaskSpec
@@ -134,6 +135,21 @@ export async function loadTask(name, { music = null } = {}) {
   }
   if (spec.narrationData?.warnings?.length) {
     for (const w of spec.narrationData.warnings) console.warn(`[旁白] ${w}`);
+  }
+  /**
+   * 风格包（`docs/STYLE.md`）：`style: 'paper'` 一行换掉整片观感。
+   *
+   * 解析放在这里（而不是引擎里）的理由与时间线一样：**报错要带任务名**。
+   * 写法不合法时给出可用风格清单，别让人去翻源码。
+   * 不写 `style` 时得到的是 `print` —— 它的色板/字体/post 都等于引擎从前的默认值，
+   * 所以老任务一个像素都不会变。
+   */
+  try {
+    spec.styleResolved = resolveStyle(spec);
+  } catch (err) {
+    throw new Error(
+      `tasks/${name}/task.config.mjs 的 style 不合法：\n  ${err && err.message ? err.message : err}`,
+    );
   }
   // timeline 可以是数组（写死秒数 / 已经展开好的段）、seq()/par() 方案（由 music 解析拍号），
   // 或者**配置档**（B 档：数组里直接写 { type: 'chart', … }，见 `docs/CONFIG-ONLY.md`）。

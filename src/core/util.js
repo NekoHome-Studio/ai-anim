@@ -288,10 +288,22 @@ export function hexToLinear(hex) {
   ];
 }
 
-/** linear [r,g,b] -> 'rgb()' CSS 字符串（给 Canvas2D 用；Canvas2D 也在 sRGB 空间）。 */
+/**
+ * linear [r,g,b] -> 'rgb()' / 'rgba()' CSS 字符串（给 Canvas2D 用；Canvas2D 也在 sRGB 空间）。
+ *
+ * ⚠ **alpha 有两种写法，现在两种都对**（`docs/IMPROVEMENTS-4.md` §2）：
+ *   · `css(P.bone, 0.6)`         —— 第二个参数给 alpha（推荐，意图最清楚）；
+ *   · `css(col(P, 'bone', a))`   —— 颜色本身是 **4 元组**时（`lines` 吃的那种），第 4 分量就是 alpha。
+ *
+ * 第二种写法以前**被静默丢掉**：这里只解构前三量，第 4 分量进了 `map` 又没被用。
+ * 后果是"整行淡入"完全不生效（段标签从第 0 帧就满不透明地画出来），而且不报错 ——
+ * `tasks/sodium` 那一支的所有文字淡入就是这么没的，找到它花了 20+ 帧出图核对。
+ * 现在 4 元组会取第 4 分量；第二个参数显式给了（≠1）就以它为准，临时压暗仍然可用。
+ */
 export function css(linear, alpha = 1) {
+  const a = alpha === 1 && linear.length >= 4 ? sat(linear[3]) : alpha;
   const [r, g, b] = linear.map((c) => Math.round(sat(linearToSrgb(c)) * 255));
-  return alpha >= 1 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${alpha})`;
+  return a >= 1 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${a})`;
 }
 
 /** 亮度相乘（做明暗变化时保持色相）。 */

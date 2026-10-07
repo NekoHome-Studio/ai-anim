@@ -181,10 +181,26 @@ async function boot() {
   const fps = Number(q.get('fps') ?? task.fps ?? 60);
   const offline = q.get('offline') === '1';
 
+  // `--style paper`（CLI 会把它放进 URL 的 ?style=）—— 临时换风格出图对比，不改任务文件。
+  // 这也是"每片换一套"这条纪律最容易执行的方式：先出几张对比图，再写进 task.config.mjs。
+  const styleOverride = q.get('style');
+  if (styleOverride) {
+    const { resolveStyle } = await import('./style/index.js');
+    try {
+      task.styleResolved = resolveStyle({ style: styleOverride });
+      console.info(`[style] 临时覆盖为 "${styleOverride}"（${task.styleResolved.label}）`);
+    } catch (err) {
+      console.warn(`[style] --style 覆盖失败：${err && err.message ? err.message : err}`);
+    }
+  }
+
   const canvas = /** @type {HTMLCanvasElement} */ ($('c'));
   engine = new Engine(canvas, {
     width, height, scale, fps,
-    palette: makePalette(task.palette ?? {}),
+    // 调色板 = 风格包的 palette + 任务自己的 palette（任务优先）。
+    // ⚠ 必须在 new Engine 之前合成：Post 构造时就把调色板常量注进 shader 源码了，
+    //   之后再换 P 只会让场景变、后处理链还是旧配色（Engine 构造函数里也写了这条）。
+    palette: makePalette({ ...(task.styleResolved?.palette ?? {}), ...(task.palette ?? {}) }),
   });
 
   setHud('编译着色器…');
@@ -210,6 +226,10 @@ async function boot() {
     // 全片共享背景（可选）：时间线里声明 { world: 'auto' } 的段由引擎先铺它。
     // 这样"忘了画背景"不再是静默黑底 —— 见 docs/IMPROVEMENTS.md P0-2。
     worldPass: task.world ?? null,
+    // 风格包（docs/STYLE.md）：色板已在上面合成，这里传进来的是 grid / post / captions / fonts / motif
+    styleResolved: task.styleResolved ?? null,
+    // 引擎级字幕层（docs/CAPTIONS.md）：`captions: true` 才开；默认关 = 老任务零变化
+    captions: task.captions ?? null,
   });
 
   // 每段的图层各有一份 TextKit，字体是全局的：等一次就够，但每层都要刷一遍缓存
@@ -420,6 +440,27 @@ const api = {
       /** 完整的 GPU 信息（含 unmasked 串）—— `check` 与 `gpu` 读同一份，见 gl.js 的注释 */
       gpu: engine?.gl.rendererInfo ?? null,
       rendererLabel: engine?.gl.rendererLabel ?? '',
+      /** 风格包（docs/STYLE.md）：`check` 会打印当前用的是哪一套 */
+      style: engine?.style
+        ? { name: engine.style.name, label: engine.style.label, motif: engine.style.motif, fonts: Object.keys(engine.style.fonts ?? {}).length }
+        : null,
+      /**
+       * 字幕层状态（docs/CAPTIONS.md）：`check` 用它提示"有旁白却没开字幕"，
+       * 以及字幕带落在哪 —— 观众反馈里"两条字幕"那件事就发生在这一层没被开起来的时候。
+       */
+      captions: engine?.captions
+        ? { on: true, band: engine.captions.band, hold: engine.captions.style.hold, karaoke: !!engine.captions.style.karaoke }
+        : { on: false },
+      narrationLines: engine?.narration?.lines?.length ?? 0,
+      /**
+       * 旁白句子明细：`check` 用它查"字幕会不会跨越场景切换"
+       * （Netflix timed-text 规范：字幕不得跨 scene change，见 `docs/CAPTIONS.md`）。
+       */
+      narration: (engine?.narration?.lines ?? []).map((l) => ({
+        id: l.id, text: l.text, start: l.start, end: l.end,
+      })),
+      /** 风格/版面的运行期警告（kit 的 assertInBand / captionNote 过长等会 push 到这里） */
+      warnings: engine?.warnings ?? [],
     };
   },
 

@@ -73,52 +73,114 @@ export function worldPass(ctx, opts = {}) {
   const grid = opts.grid ?? 60;
   const accent = opts.accent ?? P.cyan ?? P.signal;
   const vig = opts.vignette ?? 0.9;
+  /**
+   * 母题（`docs/STYLE.md`）：背景长什么样，由风格包决定。
+   *
+   * 这一条是"反审美疲劳"里最省事的一刀 —— 引擎从前的共享底只有**一种**网格
+   * （60px 细格 + 一道扫描带），每支片子都一样。现在：
+   *   `grid`（默认，= 从前逐像素不变）/ `blueprint` 坐标纸 + 图框 /
+   *   `paper` 纸面横格 / `scan` 终端扫描线 / `noir` 电影暗角。
+   *
+   * 用法（`task.config.mjs`）：
+   * ```js
+   * export const world = (ctx) => worldPass(ctx, { motif: 'auto' });  // 跟着 ctx.style.motif 走
+   * ```
+   * `motif: 'auto'` 或缺省时读 `ctx.style.motif`；`ctx.style` 不存在就用 `grid`（老行为）。
+   */
+  const motifName = (!opts.motif || opts.motif === 'auto')
+    ? (ctx?.style?.motif ?? 'grid')
+    : String(opts.motif);
+  /** GLSL 里用的是 float（`Pass` 的数字 uniform 一律走 `uniform1f`；声明成 int 会静默失效） */
+  const MOTIF_ID = { grid: 0, blueprint: 1, paper: 2, scan: 3, noir: 4 };
+  const motif = MOTIF_ID[motifName] ?? 0;
   return new Pass(ctx.gl, /* glsl */ `
     uniform vec3 cInk, cInk2, cLine, cAccent;
-    uniform float warp, spacing, sweep, vig;
+    uniform float warp, spacing, sweep, vig, motif;
     void main() {
       vec2 res = RES_LOGICAL;
       vec2 q = FRAG_PX;
       vec2 c = res * vec2(0.5, 0.46);
 
       // 「还没解算出来」的坐标系：平移 + 一点点旋转的错位
+      // （纸面/胶片那两类母题几乎不需要这种错位，所以按母题缩放）
+      float warpK = (motif > 1.5 && motif < 2.5) ? warp * 0.12 : warp;
       vec2 d = (q - c) / res.y;
       vec2 off = vec2(
         sin(d.y * 5.3 + t * 0.37) + 0.45 * sin(d.y * 11.0 - t * 0.21),
         sin(d.x * 4.1 + t * 0.29) + 0.45 * sin(d.x * 9.0 + t * 0.17)
-      ) * 20.0 * warp;
-      float a = 0.040 * warp * sin(t * 0.13);
+      ) * 20.0 * warpK;
+      float a = 0.040 * warpK * sin(t * 0.13);
       vec2 r = q - c;
       q = c + vec2(r.x * cos(a) - r.y * sin(a), r.x * sin(a) + r.y * cos(a)) + off;
 
       // 底色：中心浅、四角压暗
       vec2 e = (q / res - vec2(0.5, 0.46)) / vec2(0.92, 0.86);
       vec3 col = mix(cInk2, cInk, smoothstep(0.0, 1.0, length(e)));
-
-      // 网格：主格 + 每 5 格一根亮一点的
-      vec2 gu = q / spacing;
-      vec2 g = abs(fract(gu) - 0.5) * spacing;
       vec2 fw = vec2(fwidth(q.x), fwidth(q.y));
-      float fine = 1.0 - smoothstep(fw.x * 0.6, fw.x * 1.9, min(g.x, g.y));
-      vec2 g5 = abs(fract(gu / 5.0) - 0.5) * spacing * 5.0;
-      float coarse = 1.0 - smoothstep(fw.x * 0.6, fw.x * 1.9, min(g5.x, g5.y));
       float mask = 1.0 - smoothstep(0.18, 0.95, length(e));
-      col += cLine * 0.016 * fine * mask;
-      col += cLine * 0.022 * coarse * mask;
 
-      // 取样带：一道很淡的横向扫描线，慢慢往下走
-      // 压得比网格还轻，因为它会横穿文字
-      float band = fract((FRAG_PX.y / res.y) - sweep);
-      col += cAccent * 0.013 * (1.0 - smoothstep(0.0, 0.085, band)) * mask;
+      if (motif < 0.5) {
+        // ── grid：引擎从前的默认底（这一段逐像素不变，老任务的基线靠它） ──
+        vec2 gu = q / spacing;
+        vec2 g = abs(fract(gu) - 0.5) * spacing;
+        float fine = 1.0 - smoothstep(fw.x * 0.6, fw.x * 1.9, min(g.x, g.y));
+        vec2 g5 = abs(fract(gu / 5.0) - 0.5) * spacing * 5.0;
+        float coarse = 1.0 - smoothstep(fw.x * 0.6, fw.x * 1.9, min(g5.x, g5.y));
+        col += cLine * 0.016 * fine * mask;
+        col += cLine * 0.022 * coarse * mask;
 
-      // 边界：还没解算的时候四角留一点暗示
-      col += cAccent * 0.024 * warp * smoothstep(0.55, 1.15, length(e) * vig);
+        // 取样带：一道很淡的横向扫描线，慢慢往下走
+        // 压得比网格还轻，因为它会横穿文字
+        float band = fract((FRAG_PX.y / res.y) - sweep);
+        col += cAccent * 0.013 * (1.0 - smoothstep(0.0, 0.085, band)) * mask;
+
+        // 边界：还没解算的时候四角留一点暗示
+        col += cAccent * 0.024 * warp * smoothstep(0.55, 1.15, length(e) * vig);
+      } else if (motif < 1.5) {
+        // ── blueprint：坐标纸（细格 + 每 8 格一根亮线）+ 图框 ──
+        vec2 gu = q / spacing;
+        vec2 g = abs(fract(gu) - 0.5) * spacing;
+        float fine = 1.0 - smoothstep(fw.x * 0.7, fw.x * 2.2, min(g.x, g.y));
+        col += cLine * 0.028 * fine * mask;
+        vec2 g8 = abs(fract(gu / 8.0) - 0.5) * spacing * 8.0;
+        float coarse = 1.0 - smoothstep(fw.x * 0.7, fw.x * 2.0, min(g8.x, g8.y));
+        col += cAccent * 0.05 * coarse * mask;
+        // 图框：离画面边缘 46px 处一条亮线（工程图的图廓）
+        float edge = min(min(FRAG_PX.x, res.x - FRAG_PX.x), min(FRAG_PX.y, res.y - FRAG_PX.y));
+        col += cAccent * 0.10 * (1.0 - smoothstep(0.0, 1.6, abs(edge - 46.0)));
+        col += cAccent * 0.03 * smoothstep(0.6, 1.2, length(e) * vig);
+      } else if (motif < 2.5) {
+        // ── paper：纸面（极淡的横格 + 一点纤维噪声），几乎不做错位 ──
+        float rule = abs(fract(q.y / 36.0) - 0.5) * 36.0;
+        float line = 1.0 - smoothstep(fw.y * 0.8, fw.y * 2.6, rule);
+        col -= cLine * 0.020 * line * mask;
+        // 纤维：确定性哈希噪声（不是逐帧抖动 —— 这个 shader 只吃 t，但噪声取的是像素坐标，本来就静止）
+        float fiber = fract(sin(dot(floor(q * 0.5), vec2(12.9898, 78.233))) * 43758.5453);
+        col += (fiber - 0.5) * 0.012 * mask;
+        col -= cLine * 0.020 * smoothstep(0.55, 1.15, length(e) * vig);
+      } else if (motif < 3.5) {
+        // ── scan：终端（每 4px 一道暗扫描线 + 一条缓慢下移的回扫亮带） ──
+        float s = 1.0 - smoothstep(0.0, 1.4, abs(fract(FRAG_PX.y / 4.0) - 0.5) * 4.0);
+        col -= cLine * 0.045 * s;
+        float band = fract((FRAG_PX.y / res.y) - sweep);
+        col += cAccent * 0.05 * (1.0 - smoothstep(0.0, 0.06, band));
+        // 字符格：淡淡的等宽栅格，暗示"屏幕在等下一行输出"
+        vec2 cell = abs(fract(q / vec2(22.0, 30.0)) - 0.5);
+        float grid2 = 1.0 - smoothstep(0.44, 0.5, max(cell.x, cell.y));
+        col += cAccent * 0.020 * (1.0 - grid2) * mask;
+        col += cAccent * 0.05 * smoothstep(0.5, 1.2, length(e) * vig);
+      } else {
+        // ── noir：电影（中心柔光 + 很重的暗角） ──
+        col += cLine * 0.035 * (1.0 - smoothstep(0.0, 0.9, length(e)));
+        col *= 1.0 - smoothstep(0.30, 1.25, length(e)) * 0.72;
+        col += cAccent * 0.02 * warp * smoothstep(0.7, 1.3, length(e) * vig);
+      }
 
       fragColor = vec4(col, 1.0);
     }`, {
     cInk: P.ink, cInk2: P.ink2, cLine: P.bone, cAccent: accent,
-    warp: opts.warp ?? 1, spacing: grid, sweep: 0, vig,
-  }, { key: `kit_world_${grid}_${vig}`, blend: false });
+    warp: opts.warp ?? 1, spacing: grid, sweep: 0, vig, motif,
+  }, { key: `kit_world_${motifName}_${grid}_${vig}`, blend: false });
 }
 
 /**

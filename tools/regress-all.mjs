@@ -55,6 +55,14 @@ const ITEMS = [
   { name: 'unit:cam-math', cmd: ['tools/test-cam-math.mjs'], note: '3D 相机/投影/透视变换 + **手性**（33 项）' },
   { name: 'unit:segment-cuts', cmd: ['tools/test-segment-cuts.mjs'], note: 'P2-4 分块切点只落在安全处' },
   { name: 'unit:shots', cmd: ['tools/test-shots.mjs'], note: 'A 档镜头库：模板登记/参数名/任务段名（写错就响）' },
+  // 风格 / 字幕 / 版面（docs/IMPROVEMENTS-5.md）：全部纯 JS，毫秒级。
+  // ⚠ **不把 `lint-narration-dup` 放进清单**：已交付的 sodium / optifine 必然命中（12 / 3 句），
+  //   放进来会让回归清单永久变红，反而没人看了。它是「交付前自检」（AGENTS.md §10.9）
+  //   与 `check` 的警告项（见 scripts/anim.mjs 里那段的注释）。
+  { name: 'unit:style', cmd: ['tools/test-style.mjs'], note: '风格包 + 字幕层：合并规则 / 默认值一致 / "不写 style 时零变化"的底线（54 项）' },
+  { name: 'unit:blocks', cmd: ['tools/test-blocks.mjs'], note: '方块世界 kit：面朝向判据 / 深度排序 / 世界切片 / 摄影机关键帧' },
+  { name: 'harness:demo', cmd: ['tools/scene-harness.mjs', 'demo'], note: '离线跑场（假 ctx，不起 Chrome，0.1s）：未定义变量 / 确定性 / 文字出画' },
+  { name: 'harness:style-sampler', cmd: ['tools/scene-harness.mjs', '_style-sampler'], note: '风格采样器：配置档 4 段 + 风格解析走通' },
 
   // ── Node 侧整条链（合成/摆位/闪避；不需要 GPU，但要 ffmpeg）──
   { name: 'say:offline', cmd: ['tools/test-say.mjs'], note: 'B 档 anim say + anim mix 全链路（stub 驱动，30 项）', timeout: 10 * 60e3 },

@@ -35,6 +35,14 @@ export { mul, withAlpha, sat01, put, writeLine, fade, typed, codeRow, seqRnd, co
 
 export { panel, fillRect, kicker, footer, reticle, marker } from './elements.js';
 
+/**
+ * 版面分区与字幕/标注元件（`docs/CAPTIONS.md`）：
+ * `bands()` / `bandsOf()` 给出版面五条带（含**字幕保留带**），
+ * `captionNote()` 是"只放短标注"的说明条（写成长句会警告），
+ * `subLine()` 给"想在段内自己画字幕"的少数场合（大多数片子用 `task.captions: true` 就够）。
+ */
+export { bands, bandsOf, assertInBand, captionNote, subLine } from './bands.js';
+
 export {
   worldPass, cameraAt, cameraDir, cameraPost, enterOffset, makeWorldKit, transitionPass,
 } from './world.js';
@@ -47,3 +55,60 @@ export { makeShot, shot } from './shot.js';
  * 标定夹具与沙盒：`tasks/_three-calib`、`tasks/_three-lab`；排错见 `docs/ENGINE.md` §3.8。
  */
 export { makeThreeShot } from './three.js';
+
+/**
+ * `src/kit/panel.js` —— **2D 面板层**（讲一张表 / 一条管线 / 一组格子时用）。
+ * 与 `./elements.js` 那一组是**同一类东西的两个层次**，别混：
+ *   · `elements.js` 的 `panel(lines, x, y, w, h, col, …)` —— 底层图元，自己传 `lines` 与颜色；
+ *   · 这里的 `panelBox(ctx, { x, y, w, h, … })` —— 整块面板（底 + 边 + 四角 + 标题 + 副标题
+ *     + `tone` 压暗），只吃 `ctx`。
+ * 所以本层那个**改名成 `panelBox` 再出**，`elements.js` 的 `panel` **一个字都不动**
+ * （老场景照旧；`docs/IMPROVEMENTS-4.md` §4.4 B）。
+ *
+ * 另外：这里的 `col` 与 `./layout.js` 的 `mul/withAlpha` 是同一族，为避免两个 `col` 打架，
+ * 本层那个出成 `panelCol`；`jitter/win/step` 与 `./blocks.js` 的同名函数**实现相同**，不重复出。
+ */
+export {
+  panelBox, tile, tileRow, chips, arrowH, bufBox, hatchBox, meter, tag2,
+  chipLayout, shadeOf, mixToInk, toneColor, col as panelCol,
+} from './panel.js';
+
+/**
+ * `src/kit/blocks.js` —— **方块世界 kit**（3D 线段批 + 画家算法 + 面朝向判据 + 世界切片 +
+ * 按段名定位的摄影机）。`docs/IMPROVEMENTS-4.md` §4.2 / §4.3 / §4.4 A/C。
+ *
+ * ```js
+ * import { makeBlocksKit } from '../../../src/kit/index.js';
+ *
+ * // setup(ctx) 里建一次；clock 是 anim say 生成的段时刻表
+ * this.B = makeBlocksKit({
+ *   P: ctx.P,                                    // 缺 slab / slabHi 会当场抛错并点名
+ *   clock: { ctm: { start: 60.0, stretch: 1.05 } },
+ *   keys: [                                      // "段名 + 段内秒"：段长变了机位自动跟着走
+ *     { id: 'ctm', at: 0.0,  pos: [-8, 32, -84], tgt: [0, 15, 4], fov: 48 },
+ *     { id: 'ctm', at: 19.0, pos: [-6, 31, -82], tgt: [0, 15, 4], fov: 48 },
+ *   ],
+ * });
+ *
+ * // render(ctx) 里
+ * const cam = this.B.camAt(f.t);                  // 全片一台连续摄影机（纯函数）
+ * lines.begin();
+ * for (const s of this.B.sections) this.B.section(ctx, cam, s, { alpha: s.surf ? 1 : 0.4 });
+ * this.B.flush(ctx);                              // 显式排水（也可以直接 lines.flush(ctx.out)）
+ * ```
+ *
+ * ## 两条数字上的纪律（写错了画面"看起来不对"但不报错）
+ *
+ * · **alpha 管在不在，tone 管亮不亮**（§4.3）：`section({ alpha: 0.4 })` 是**把它画暗**，
+ *   不是把它画透 —— `alpha ≥ 0.17` 时填充**完全不透明**；深度淡出（`depthTint`）也只乘颜色。
+ * · **`facesToward` 的判据是 `dot(相机 − 面心, 法线) > 0`**（§4.2）。老代码写成
+ *   `dot(面心 − 相机, 法线) > 0`（= 背面的条件），于是顶面从来没被铺过、世界读成水晶。
+ *   `tools/test-blocks.mjs` 拿正反用例钉着它，**别"顺手"改回去**。
+ */
+export {
+  makeBlocksKit, seg3, box3, solidBox, hatchQuad, ground, playerMarker, frustumCone,
+  beam, orb, flush, sortByDepth, byDepth, facesToward, faceTone, visibleEdges, faceGeometry,
+  halfOf, solidityAt, depthAlpha, depthTint, toAbsTime, localT, expandKeys, keySpan,
+  pickColor, requireColor, FACE_NORMALS, FACE_GEO, BOX_EDGES, SUN,
+  FILL_ZERO, FILL_FULL, TONE_FLOOR, SOLID_K, QUEUE_KEY, PENDING, clearPending,
+} from './blocks.js';

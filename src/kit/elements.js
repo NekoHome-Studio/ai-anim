@@ -43,17 +43,26 @@ export function kicker(type, lines, P, str, x, y, t, delay = 0, opts = {}) {
   return w;
 }
 
-/** 页脚：一条细线 + 左右两行小字。全片复用能让片子"成套"。 */
-export function footer(type, lines, P, left, right, t, delay, W, H) {
+/**
+ * 页脚：一条细线 + 左右两行小字。全片复用能让片子"成套"。
+ *
+ * @param {any} [grid] 风格栅格（`ctx.grid`）。传了就用它的 `pad` / `footerLineY` / `footerY`
+ *   —— 不同风格的页边距差很多（`print` 120 / `terminal` 84 / `noir` 160），
+ *   页脚要是永远钉在 120，换风格时"版心"就对不上。不传 = 从前的 H-104 / H-62 / 120（零变化）。
+ */
+export function footer(type, lines, P, left, right, t, delay, W, H, grid = null) {
   const k = easeOutCubic(sat01((t - delay) / 0.7));
-  if (k > 0.001) lines.seg(120, H - 104, 120 + (W - 240) * k, H - 104, 1.2, mul(P.bone, 0.14));
+  const pad = grid?.pad ?? 120;
+  const lineY = grid?.footerLineY ?? (H - 104);
+  const textY = grid?.footerY ?? (H - 62);
+  if (k > 0.001) lines.seg(pad, lineY, pad + (W - pad * 2) * k, lineY, 1.2, mul(P.bone, 0.14));
   if (left) {
-    put(type, left, 120, H - 62, {
+    put(type, left, pad, textY, {
       size: 22, family: 'mono', tracking: 3, color: cssOf(P.ash, 0.9), ...fade(t, delay + 0.15),
     });
   }
   if (right) {
-    put(type, right, W - 120, H - 62, {
+    put(type, right, W - pad, textY, {
       anchor: 'right', size: 22, family: 'mono', tracking: 3, color: cssOf(P.ash, 0.9), ...fade(t, delay + 0.25),
     });
   }

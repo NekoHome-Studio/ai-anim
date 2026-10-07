@@ -83,6 +83,27 @@ export class TextKit {
     /** @type {Map<string, {clusters: string[], cum: number[], x: number[]}>} */
     this.layoutCache = new Map();
     this.fontsReady = false;
+    /**
+     * 当前字体栈：`sans` / `mono` / `serif` 三个逻辑名 → CSS 字体栈。
+     *
+     * 为什么要做成实例字段（而不是永远读模块级 `FAMILIES`）：**风格包要能整片换字体**
+     * （`src/style/index.js` 的 `fonts`）。模板与场景里写的都是逻辑名（`family: 'sans'`），
+     * 所以只要换掉这张映射，全片（含 8 个镜头模板）的字形一起换 —— 一处生效，处处生效。
+     * 不设风格包时它就是 `FAMILIES`，与从前逐像素一致。
+     */
+    this.families = FAMILIES;
+  }
+
+  /**
+   * 换字体栈（风格包用）。只覆盖传进来的键，其余沿用默认。
+   * @param {Record<string, string>} [fonts] 例如 `{ mono: "'IBM Plex Mono', Consolas, monospace" }`
+   */
+  setFamilies(fonts) {
+    if (fonts && Object.keys(fonts).length) {
+      this.families = { ...FAMILIES, ...fonts };
+      this.clearCache();
+    }
+    return this;
   }
 
   /** 加载外部字体（有 fonts/fonts.css 就加载，没有就用系统回退）。 */
@@ -121,7 +142,7 @@ export class TextKit {
       size = 64, weight = 400, italic = false, family = 'sans', tracking = 0,
       align = 'left', baseline = 'alphabetic',
     } = style;
-    const fam = FAMILIES[family] ?? family;
+    const fam = this.families[family] ?? family;
     const f = `${italic ? 'italic ' : ''}${weight} ${size}px ${fam}`;
     const c = this.ctx;
     c.font = f;

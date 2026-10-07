@@ -52,13 +52,29 @@ npm run dev                                     # 浏览器里实时预览（空
 > 再通过管道读它的输出 —— **在受限沙箱里（例如只允许写工作区的那档）会直接 `spawn EPERM`**，
 > 而报错位置在 `openSession`，看不出是权限问题。另外在 PowerShell 里**别用管道接原生程序的输出**
 > （`node scripts/anim.mjs ... | Select-Object` 会被以"命名管道"为由拒绝）—— 直接跑，让输出自己打印。
-> （`docs/IMPROVEMENTS.md` §5）
+> （`docs/history/IMPROVEMENTS-1-3.md` 第一轮 §5）
 
 ---
 
 ## 2. 建一个新片子
 
 有**两条路**。先试第一条——大多数片子用第一条就够了。
+
+> ### ★ 动手之前先决定两件事（`docs/STYLE.md` / `docs/CAPTIONS.md`）
+>
+> **① 这支片子用哪套风格？** 一行 `style: 'paper'` 就换掉整片观感（配色 / 字体栈 /
+> 背景母题 / 后处理基线 / 版面栅格 / 字幕样式一起换）。可选的：`node scripts/anim.mjs styles`。
+> **相邻两支片子不要用同一套** —— 8 个镜头模板加上默认调色板，是一整支旧片子的逐像素冻结副本，
+> 连着用两支，观众看到的是"又是这个味"（这就是审美疲劳的来源，不是引擎画不出来）。
+> 不写 `style` 时等于 `print`（= 引擎从前的默认观感，老任务一像素不变）。
+> 想先看效果：`node scripts/anim.mjs still _style-sampler -t 1.8,6,9.6 --style paper`。
+>
+> **② 有旁白吗？字幕交给引擎。** `captions: true` 之后，引擎每帧自动画当前那句旁白
+> （位置来自风格包的**字幕保留带**），场景里**一行都不用写**。
+> 而**画面文字只放标注**（名词 / 数字 / 单位 / 出处）—— 句子交给旁白与字幕。
+> 画面上的说明文字与语音字幕说同一句话，就是观众反馈里"两条字幕同时出现，看着好迷糊"
+> （sodium 43 句旁白里有 12 句被逐字抄成了画面说明条）。
+> 交付前跑 `node tools/lint-narration-dup.mjs <任务>` 自查。
 
 ### 2.1 配置档（推荐先试）：只写 `task.config.mjs`
 
@@ -68,6 +84,8 @@ npm run dev                                     # 浏览器里实时预览（空
 // tasks/<任务>/task.config.mjs —— 唯一需要编辑的文件
 export default {
   title: '我的片子', width: 1920, height: 1080, fps: 60, scale: 1,
+  style: 'paper',                                // ← 风格包（anim styles 看全部；不写 = print）
+  captions: true,                                // ← 引擎字幕层（有旁白时开；见 docs/CAPTIONS.md）
   timeline: [                                    // 数组、seq([...]) 都行
     { type: 'title', title: '我的片子', sub: '副标题', dur: { beat: 8 } },
     { type: 'chart', values: [0.3, 0.7, 0.95], title: '成绩', dur: 5, id: 'bars' },
@@ -328,7 +346,7 @@ export default makeShot('chart', {
 | `Date.now()` / `performance.now()` | 时间只能来自 `f.t` | 用 `f.t` / `f.lt` |
 | 逐帧累积状态（`this.x += v*dt`） | 子帧乱序、可任意 seek，累积值无意义 | 把位置写成**时间的函数**，例如 `x = f(t - birth)` |
 | 按帧抖动用 `Math.floor(t*60)` | 一帧内所有子帧会取到不同值，出现双重曝光 | 用 `f.idx` |
-| **拿逐帧白噪声当"手持"**（`shake: [(hash2(f.idx,1)-.5)*2*amp, …]`） | 60fps 下每 16.7ms 跳到一个**新位置** = **振动**，不是手持 —— 幅度只有 5px 也会被用户说成"像地震"（`docs/IMPROVEMENTS-3.md`） | 抖动用 `shakeSmooth(f.t, amp)`（`src/core/cam.js`，**是 t 的平滑函数**）；真要震屏/冲击才用逐帧噪声，且写成 `handheld(cam, f.t, f.idx, { mode: 'grain' })` |
+| **拿逐帧白噪声当"手持"**（`shake: [(hash2(f.idx,1)-.5)*2*amp, …]`） | 60fps 下每 16.7ms 跳到一个**新位置** = **振动**，不是手持 —— 幅度只有 5px 也会被用户说成"像地震"（`docs/history/IMPROVEMENTS-1-3.md` 第三轮） | 抖动用 `shakeSmooth(f.t, amp)`（`src/core/cam.js`，**是 t 的平滑函数**）；真要震屏/冲击才用逐帧噪声，且写成 `handheld(cam, f.t, f.idx, { mode: 'grain' })` |
 | 场景里不 `text.clear()` 就画 | 上一帧的字会叠上来 | 每帧开头 `text.clear()` |
 | 一帧多段共存时共用 `engine.text` | 每段场景有自己的 `ctx.text`，别用引擎的 | 一律用 `ctx.text` / `ctx.type` |
 | 声明了 `handlesTransition` 却不铺整帧背景 | 那一段的底是**纯黑**（只有 grain 和暗角），而且不报错 —— fidus 那次 9 段里 8 段这样 | 写 `cut(shot, { world: 'auto' })` 让引擎铺；或自己画一次全屏 Pass；`check` 会报出来 |
@@ -573,6 +591,30 @@ if (l?.words) type.karaoke(l.text, l.words, 200, 800, f.t, { size: 84, base: css
 `cut(scene, { dur: { vo: 'line-id' } })` 直接按某句旁白的长度定时长（名字写错会抛错）。
 离线回归：`node tools/test-say.mjs`（不需要联网/GPU）；真 TTS 通电：`node tools/probe-tts-edge.mjs`。
 
+#### 字幕：交给引擎，别自己画（`docs/CAPTIONS.md`）
+
+```js
+// task.config.mjs
+captions: true,                    // ← 就这一行；场景里一个字都不用写
+```
+
+引擎每帧自动画"此刻该说的那句"（含"说完再留一会儿"、逐句淡入淡出），位置来自风格包的
+**字幕保留带**（`style.grid.captionBand`，默认顶部居中 y 40–104）。字幕画在**后处理之后** ——
+它是信息层，不过泛光/颗粒（"骨白正文永远不要 bloom"）。
+
+三条纪律：
+
+1. **画面文字只放标注**（名词 / 数字 / 单位 / 出处），**不许复述旁白**。
+   同屏两套完整句子就是观众反馈里"两条字幕同时出现，看着好迷糊"；交付前跑
+   `node tools/lint-narration-dup.mjs <任务>` 自查（它会把逐字重复报到 `文件:行号`）。
+2. **字幕带是保留区**：别把面板/计量条放进去。kit 的 `assertInBand()` 会在压上时警告，
+   `check` 会把这类警告打出来（走 `ctx.warnings`，不是 `console.warn` —— 它每帧都会发生）。
+3. **别做逐词高亮**（`karaoke: true` 要显式开）：12 分钟 / 96 人的对照实验里，字幕本身
+   对记忆与理解没有负面影响，**关键词突显是负效应**（受试者把它当成筛选信息的替代品）。
+
+平台字幕（上传用）另有一条命令：`node scripts/anim.mjs subs <任务>` → `out/<任务>/*.srt|.ass`
+（每行 ≤16 字、最多 2 行，Netflix 简体中文规范）。**开了 `captions: true` 就别再烧一遍 `.ass`** —— 那是两层字幕。
+
 ---
 
 ## 7. 渲染与导出
@@ -642,7 +684,7 @@ ffmpeg 用 `-pix_fmt nv12` 直接吃。瓶颈在哪里、量具与验收数字�
 
 **真 4K 可用**：`node scripts/anim.mjs video <任务> --scale 2`（或任务里写 `scale: 2`）。
 scale 接受 1..4；场景写法不用改，只要 shader 里别拿物理像素当逻辑像素用。
-（历史上 `--scale 2` 曾被 CLI 拒绝，因为 `LineBatch` 顶点着色器用物理分辨率换算裁剪空间导致矢量在 4K 下消失 —— 已修，见 `docs/STATUS.md` §6.3。）
+（历史上 `--scale 2` 曾被 CLI 拒绝，因为 `LineBatch` 顶点着色器用物理分辨率换算裁剪空间导致矢量在 4K 下消失 —— 已修，见 `docs/history/STATUS-rounds-1-6.md` §6.3。）
 
 ---
 
@@ -689,6 +731,7 @@ src/core/          引擎（改之前先读 docs/ENGINE.md）
   three-bridge.js  3D 第 ③ 种：**真网格**（Three.js 桥：上传成图层 / 三种合成 / 线性色 / 投影）
   palette.js       调色板（线性色表 + GLSL 常量注入）
   narration.js     旁白表（ctx.narration 的查询接口，见 docs/NARRATION.md）
+  captions.js      **引擎级字幕层**（task.captions 打开后每帧自动画，见 docs/CAPTIONS.md）
 src/kit/           引擎自带的镜头工具（写场景先看这里，别再自己抄一份 _kit.js）
   index.js         统一出口
   layout.js        排版：put / writeLine / fade / typed / codeRow（不碰 GPU）
@@ -696,11 +739,14 @@ src/kit/           引擎自带的镜头工具（写场景先看这里，别再�
   world.js         共享背景 + 一台摄影机 + 甩镜转场（worldPass / makeWorldKit）
   shot.js          makeShot()：把「一个镜头的骨架」包成一个函数
   three.js         makeThreeShot()：Three.js 镜头（与 makeShot 同形状；见 docs/THREE.md）
+  bands.js         **版面分区**（六条带，含字幕保留带）+ captionNote / subLine / assertInBand
+src/style/         **风格包**（style pack）：一行 `style: 'paper'` 换掉整片观感（docs/STYLE.md）
+  index.js         STYLES / resolveStyle / gridFor（配色 / 字体 / 背景母题 / 栅格 / 后处理基线 / 字幕样式）
 src/shots/         A 档镜头库：一行取一个整镜头（`shot('名字', {…})`）
   index.js         shot / SHOTS / listShots（参数写错会抛错，不静默忽略）
   title chart kinetic whip outro wave pulse grid   8 个模板（查参数：anim.mjs shots [名字]）
 src/timeline.js    时间线 DSL：seq / cut / par / at（cut 支持 { world } 声明共享背景；配置档节点 { type: '…' } 见 §3.2）
-src/tasks.js       任务发现与加载（配置档时间线的选路也在这里）
+src/tasks.js       任务发现与加载（配置档时间线的选路、风格包解析都在这里）
 src/app.js         浏览器入口（预览 + 离屏协议）
 scripts/anim.mjs   CLI
 scripts/lib/       CLI 侧的 Node 工具（**不进浏览器、不进 Vite 模块图**）
@@ -708,26 +754,36 @@ scripts/lib/       CLI 侧的 Node 工具（**不进浏览器、不进 Vite 模�
   say.mjs          anim say：旁白脚本 → TTS → 时长表 → narration.json（solveTiming / alignWords）
   mix.mjs          anim mix：旁白摆位 + 闪避（duckGain / mixTracks）→ 一条混音轨
   shake.mjs        抖动统计（纯函数）：逐帧变化量 vs 幅度 ⇒ 「平滑手持」还是「逐帧白噪声」；
-                   `anim shake` 与 `video` 出片收尾的守门共用同一套判据（IMPROVEMENTS-3 A–F）
+                   `anim shake` 与 `video` 出片收尾的守门共用同一套判据（`docs/history/IMPROVEMENTS-1-3.md` 第三轮 A–F）
 tasks/<任务>/       片子：task.config.mjs + scenes/ + audio/ + narration.mjs（有旁白时）+ FACTS.md
                    （**配置档任务可以没有 scenes/**：时间线里直接写 { type: '…' }，见 §3.2）
 public/fonts/      字体声明（文件自备，缺失自动回退系统字体）
 docs/              ENGINE.md（引擎规格）、COOKBOOK.md（做法手册）、ROADMAP.md（路线图）、
                    CONFIG-ONLY.md（**零代码出片**：只写 task.config.mjs 的教程，B 档；见 §3.2）、
-                   STATUS.md（**当前状态与验收证据，先看这份**）、
-                   IMPROVEMENTS.md（第一轮：tasks/fidus 那轮暴露的问题，17 条已全部落地）、
-                   IMPROVEMENTS-2.md（第二轮：tasks/beast 那轮的问题，14 条已全部落地 +
-                   落地状态表；**要动引擎先看这份**）、
+                   STATUS.md（**当前状态 + 最近几轮的验收证据（§14–§19）**；第一～六轮已归档）、
+                   BACKLOG.md（**「还没做的事」的唯一清单**：待办 / 待你拍板 / 已关掉的；
+                   旧文档里那些"没做的"小节都以这份为准 —— **要动引擎先看这份**）、
+                   STYLE.md（**风格包与反审美疲劳**：怎么换、每片必须换掉的三项、节奏数值）、
+                   CAPTIONS.md（**字幕层与信息分工**：画面只放标注、句子交给旁白与字幕）、
+                   SCENE-BRIEF-TEMPLATE.md（**写分镜/派子代理时照这份起草**，含"本片必须不同的三项"）、
                    NARRATION.md（**口播/旁白这一层：A/B/C 三档都已落地**，做带旁白的片子先看）、
                    PERF.md（**渲染性能实测与验收口径**：瓶颈、并行/NVENC、`-copyts`、verify 取时坑）、
                    FACTS-TEMPLATE.md（对外材料的事实出处模板）、
                    THREE.md（**第 3 种 3D：Three.js 镜头**——怎么用、三种背景合成模式、
-                   确定性铁律、投影贴标签、坑清单；写 3D 镜头先看这份）、
-                   HANDOFF-THREEJS.md（**已落地**：把 Three.js 接进引擎那一轮的设计档与
-                   坑清单，留作历史参考；现状以 `docs/THREE.md` 与 §3.8 为准）
-docs/history/      过期文档（HANDOFF.md 等），只作历史参考
+                   确定性铁律、投影贴标签、坑清单；写 3D 镜头先看这份）
+docs/history/      **归档**：已完成 / 已过期的东西，只作历史参考，**不要当待办读**
+                   （索引见 docs/history/README.md）：
+                   HANDOFF.md（引擎早期的交接单）、HANDOFF-THREEJS.md（Three.js 接入提案）、
+                   HANDOFF-sodium.md（sodium 可读性方案）、
+                   IMPROVEMENTS-1-3.md（第一～三轮：fidus / beast / promo 那三轮，53 条全落地）、
+                   IMPROVEMENTS-4-5.md（第四～五轮：optifine 那轮 + 风格包/字幕层）、
+                   STATUS-rounds-1-6.md（STATUS 的第一～六轮详细记录，**§1–§13 的章节号原样保留**）
 tools/             诊断与回归脚本（probe-*.mjs / test-*.mjs / smoke-*.mjs），不参与出片
   regress-all.mjs  整份回归清单一条命令跑完（日志与汇总在 out/_regress/）
+  lint-narration-dup.mjs  静态检查：**画面文字逐字复述旁白**（"两条字幕"的元凶），报 file:line
+  scene-harness.mjs  离线跑场：用假 ctx 把整条时间轴 render 一遍（抓未定义变量 / 确定性破例）
+  test-style.mjs   风格包与字幕层的纯逻辑回归（含"不写 style 时像素不变"的底线断言）
+  test-blocks.mjs  方块世界 kit 的纯 JS 回归（面朝向判据 / 深度排序 / 摄影机关键帧）
   probe-raymarch.mjs  raymarch/3D 层的量具：14 个 shader 变体 + 直接读浮点缓冲（NaN/Inf 分开数）
   probe-three.mjs   Three.js 桥的量具：朝向 / 两条颜色管线是否一致 / 线性 alpha（10 项判据）
   tts-edge.py      默认 TTS 驱动（edge_tts 的 WordBoundary → 词级时间戳）
@@ -754,6 +810,14 @@ out/               渲染产物（图、mp4、日志；`out/_regress/` 是回归
 7. 有旁白的片子：`anim say` 的输出里**没有叠句警告**、没有 `MAX_STRETCH` 顶到上限的警告，
    说话占比没有高到离谱（>80% 它会自己提醒）；每段最后一句说完之后还有 `TAIL` 秒画面
    （`solveTiming` 保证并打印）。改完旁白先跑 `node tools/test-say.mjs`（不需要 GPU）
+8. **这一支的风格跟上一支不一样**（`docs/STYLE.md`）：相邻两支片子不要用同一套 `style` ——
+   至少换掉「主色/介质、字体、背景母题」里的两项。8 个镜头模板 + 默认调色板是一整支旧片子的
+   逐像素冻结副本，连着用两支，观众看到的就是"又是这个味"。
+   出对比图：`node scripts/anim.mjs still <任务> -t <时刻> --style paper`（临时覆盖，不改文件）。
+9. **有旁白的片子开了引擎字幕**（`docs/CAPTIONS.md`）：`captions: true`，而且
+   `node tools/lint-narration-dup.mjs <任务>` **零命中**（画面文字逐字复述旁白 = 观众说的"两条字幕"）；
+   `check` 的输出里没有「压进字幕保留带」的警告。
+   平台要软字幕就 `node scripts/anim.mjs subs <任务>`（**开过 captions 就别再烧一遍**）
 
 ### 出问题时按这个顺序查
 
