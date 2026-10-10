@@ -1815,7 +1815,13 @@ async function cmdCheck() {
       warn(`\n${checkVerdictLine({ problems: errs.length, skipped: skipped.length })}`);
       process.exitCode = 1;
     } else {
-      log(`\n${checkVerdictLine({ skipped: skipped.length })}（单子帧与多子帧两条路径都验过了）`);
+      // ⚠ `--quick` **只跑单子帧** —— 结论行不许说"两条路径都验过了"。
+      //    那正是 1-19 要消灭的东西（没跑却说跑了）：`--quick` 本身不是失败，
+      //    但它是**省掉了一半检验**，必须在结论行里如实讲出来，否则读输出的 agent
+      //    会把"冒烟过了"当成"完整体检过了"（2026-10-10 主代理跑 `check demo --quick` 时抓到）。
+      log(`\n${checkVerdictLine({ skipped: skipped.length })}${quick
+        ? '（--quick：**只验了单子帧**这一条路径 —— 多子帧（成片真正走的那条）与入场头 1 秒这次都没看，交付前请去掉 --quick 再跑一次）'
+        : '（单子帧与多子帧两条路径都验过了）'}`);
     }
   } finally { await closeSession(); }
 }

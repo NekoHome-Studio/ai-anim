@@ -279,6 +279,21 @@ t('源码自检：cmdCheck 的结论行必须带 skipped 计数，并且 --stric
     'skipped 在 --strict 之外不许影响退出码（tools/regress-all.mjs 的 10 个 check:* 依赖它）');
 });
 
+t('源码自检：--quick 下结论行不许说"两条路径都验过了"（没跑就说没跑）', () => {
+  // 2026-10-10 主代理跑 `check demo --quick` 抓到：--quick **只跑单子帧**，结论行却无条件写着
+  // "（单子帧与多子帧两条路径都验过了）"。那正是 1-19 要消灭的东西 —— 没跑却说跑了。
+  const start = src.indexOf('async function cmdCheck(');
+  const end = src.indexOf('/** 把若干时刻渲染成一张接触表', start);
+  const body = src.slice(start, end);
+  const at = body.indexOf('checkVerdictLine({ skipped: skipped.length })');
+  assert.ok(at > 0, '定位不到结论行');
+  const verdict = body.slice(at, at + 400);
+  assert.match(verdict, /\$\{quick/, '结论行的"验了哪些路径"没按 --quick 分档');
+  assert.ok(verdict.includes('只验了单子帧'), '--quick 分支没有如实说"只验了单子帧"');
+  assert.ok(!/checkVerdictLine\(\{ skipped: skipped\.length \}\)\}（单子帧与多子帧两条路径都验过了）/.test(body),
+    '又出现了"没跑多子帧却说两条路径都验过了"的写法');
+});
+
 t('源码自检：1-3 的三处措辞都换了（不再有"修好之后重跑同一条命令即可"）', () => {
   // 只看**输出串**（die(`…`) 里的内容），不看解释性注释
   assert.ok(!/`  修好之后重跑同一条命令即可/.test(src), '`--parallel` 那句"重跑即可"还在');
