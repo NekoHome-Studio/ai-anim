@@ -835,9 +835,18 @@ out/               渲染产物（图、mp4、日志；`out/_regress/` 是回归
 
 ```sh
 node scripts/anim.mjs check <任务>             # 三点采样 + 多子帧比对 + 背景守门
+node scripts/anim.mjs check <任务> --quick     # 冒烟：每段只采 50% 一个点、只跑单子帧（**没看**多子帧与入场头 1 秒）
+node scripts/anim.mjs check <任务> --strict    # 把 `skipped:`（没跑 ≠ 通过）也当成失败；默认不改退出码
 node scripts/anim.mjs audit <任务>             # 每个交叠段在交叠期到底画了什么
 node scripts/anim.mjs still <任务> -t ...      # 出图，用 Read 看
 node scripts/anim.mjs probe-alpha <任务>       # 整行淡入（alpha）到底生效没有
+node scripts/anim.mjs determinism <任务> --from 0 --frames 40  # 顺向/反向/单次 seek：跨帧依赖定位（有分叉退出码 1）
+node scripts/anim.mjs shake <任务> [--from 0 --to 48] [--json] # 抖动体检：振动 / 收尾还在晃（有问题退出码 1）
+node scripts/anim.mjs perf <任务> --from 20 --to 24 --gpu high # 测速：每帧毫秒 / 子帧数（先量再定）
+node scripts/anim.mjs gpu [<任务>]             # GPU 与环境能力（浮点纹理缺失 = 这台机器不能跑 HDR 渲染）
+node scripts/anim.mjs dumpframe <任务> -t 0.5 --run-up         # 落一张裸帧 + 引擎内部量（两条路径对照）
+node scripts/anim.mjs dumpframes <任务> --from 0 --to 1        # 顺着渲一串裸帧（对照实验用）
+node scripts/anim.mjs dumppx <任务> --times 1.5 --out x.raw    # 导出浏览器那一帧的裸像素
 node tools/png-rows.mjs <png> [x]              # 直接量一张图：某根线/某个色块到底在不在
 node tools/probe-colorspace.mjs <任务>         # 导出 vs 预览 的颜色是否一致
 node tools/probe-ribbon.mjs 11.2 1,2           # 4K 下矢量几何是否与 1080p 同位同尺寸

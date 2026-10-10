@@ -24,8 +24,11 @@
 
 | 输出词 | 含义（什么情况下会看到它） | 修法 |
 |---|---|---|
-| `✗ 有 N 个问题（另有 N 项**没跑**，见上面的 skipped）`<br>`scripts/anim.mjs:236`（`checkVerdictLine`） | `check` 的收尾结论行，N 件事没通过；括号里是"没验过"的项数 | 往上翻 `←` 开头的行 —— 每一条都点名了段名 / 时刻 / 判据；改完重跑 `node scripts/anim.mjs check <任务>`。退出码 1 |
-| `✓ 没有发现问题（skipped: 无）（单子帧与多子帧两条路径都验过了）`<br>`scripts/anim.mjs:237` + `:1437` | 收尾结论行，全部通过，且没有任何一项被跳过 | 这才叫过。接着走 `AGENTS.md` §10 的清单（`still` 抽帧 + 真的用 Read 看图） |
+| `✗ 有 N 个问题（另有 N 项**没跑**，见上面的 skipped）`<br>`scripts/anim.mjs` 的 `checkVerdictLine()`（`grep -n 'function checkVerdictLine'`） | `check` 的收尾结论行，N 件事没通过；括号里是"没验过"的项数 | 往上翻 `←` 开头的行 —— 每一条都点名了段名 / 时刻 / 判据；改完重跑 `node scripts/anim.mjs check <任务>`。退出码 1 |
+| `✓ 没有发现问题（skipped: 无）（单子帧与多子帧两条路径都验过了）`<br>同上 + `cmdCheck` 的收尾 `log` | 收尾结论行，全部通过，且没有任何一项被跳过 | 这才叫过。接着走 `AGENTS.md` §10 的清单（`still` 抽帧 + 真的用 Read 看图） |
+| `skipped: 无（这次体检的每一项审计都真的跑了）`<br>`scripts/anim.mjs` 的 `formatSkipped()` | ✅ **唯一的"确实全跑了"**。这一段**永远出现**（哪怕没跳过）—— 否则"确实全跑了"和"这段整个没执行"在输出里长得一样（BACKLOG 1-19） | 无（这是正面的） |
+| `skipped: N 项没跑 —— 这些地方**没有验过**，不要当成通过：` + `  · <是什么没跑>[ ×N]：<为什么>` + `  （想让"有跳过"变成非零退出：加 --strict —— 默认不改退出码，见 docs/BACKLOG.md 1-19）`<br>`scripts/anim.mjs` 的 `formatSkipped()` / `pushSkipped()` | ⚠ **"空 ≠ 干净"**：背景守门 / 旁白复述 / 多子帧路径 / 非有限值扫描 任一项没跑成，都进这一段。同一件事失败多次会聚合成 `×N` 一行 | **不许当成通过**：逐条按 `why` 修（页面失联 / 工具退出码 2 / 子进程起不来…），修完重跑；要把它当门就加 `--strict`（默认不改退出码，回归清单依赖这一点） |
+| `✗ 有 N 个问题（另有 M 项**没跑**，见上面的 skipped）`（`--strict` 下"有跳过"也算失败）<br>`scripts/anim.mjs` 的 `checkVerdictLine()` + `--strict` 分支 | 你加了 `--strict` 且有 skipped ⇒ 退出码 1 | 要么把 skipped 清掉（多半是页面/工具没跑成），要么去掉 `--strict` 并**在报告里写明哪一项没验** |
 | `← ⚠ 非有限值：NaN n / Inf n / 量级>5e4 n 像素（首个坏像素 x=… y=…，kind）`<br>`scripts/anim.mjs:1335`（`cmdCheck`） | 某段某时刻的**浮点读回**里出现了 NaN / ±Inf / 巨值。8bit 读回和 `stats()` 都分不出它，所以这一条是直接读浮点缓冲点名的 | 先看紧跟的两行提示：最常见来源是**相机 uniform 全 0**（`cam3Uniforms` 字段名写错）与 `pow(0, 负数)`；raymarch 用 `node tools/probe-raymarch.mjs` 复现。见 `AGENTS.md` §5.5 末条 |
 | `这是「整屏白 / 单帧白多帧黑」的一类根因`<br>`scripts/anim.mjs:1336` | 上面那条非有限值的解释行 | 同上；这条同时在说"别去查累加 bug，先修非有限值" |
 | `← 几乎是全黑，场景可能没画东西`<br>`scripts/anim.mjs:1346`（`cmdCheck`） | 采样点平均亮度 `mean < 0.004` | 这一段没铺背景或没画东西：`cut(shot, { world: 'auto' })` 让引擎铺底，或自己在 `render` 开头 `gl.clear` + 画一次全屏 Pass。看图：`node scripts/anim.mjs still <任务> -t <该时刻> --only <段>` |
@@ -90,16 +93,22 @@
 |---|---|---|
 | `✗ SCENE ERROR`（暗红底 + 贴边亮红框，画面中间写着段名 / 帧号 / 异常首行）<br>`src/core/engine.js:617` | 这一帧的 `render` 抛了异常，引擎画的是**错帧卡片**，不是内容 | 它是"看起来有内容"的一张图，别当成画面。用 `still --only <段> -t <时刻>` 复现，读控制台首行异常 |
 | `那些帧画出来的是**错帧卡片**（暗红底 + 红框 + ✗ SCENE ERROR），不是画面内容。`<br>`scripts/anim.mjs:1393`（`cmdCheck`）/ `:1532`（`cmdStill`）/ `:3544`（`cmdVideo`） | 三条命令各自在收尾点名 | 同上；`check` 与 `still` 会置退出码 1，`video` 直接不出片 |
-| `连续 N 帧场景抛异常，停止渲染（这段之后每一帧都会是错帧卡片）`<br>`scripts/anim.mjs:3315`（`cmdVideo`） | 推流途中连续出错，CLI 主动停 | 修完重跑；长片子用 `--segments` 只重渲受影响的那一块 |
+| `连续 N 帧场景抛异常，停止渲染（这段之后每一帧都会是错帧卡片）。` + `用 node scripts/anim.mjs check <任务> 复现，或 still --only <段> -t <时刻> 看图。`<br>`scripts/anim.mjs` 的 `cmdVideo` 推流循环（`ERR_STOP_AFTER`） | 推流途中连续出错，CLI 主动停 | 照它给的两条命令复现；**别直接重跑出片**（见下一条） |
+| `这是**已知原因**（确定性）：场景代码在某个时刻抛异常，重跑不会有不同结果。` + `下一步：① 复现并点名：node scripts/anim.mjs check <任务>（会报段名与时刻）；② 看那一帧的图：…still…；③ 改代码 —— **不要直接重跑出片**：不修代码的重跑会得到同样的错帧卡片。`<br>`scripts/anim.mjs` 的 `knownCauseHeadline('scene')`（`cmdVideo` 的场景异常守门） | 成片守门发现渲染期抛异常 ⇒ **归为"已知原因（确定性）"**（BACKLOG 1-3） | 按三步做：`check` 点名段与时刻 → `still` 看图 → **改代码**。以前这里只说"复现"，读的人会顺手重跑一整片，白等而且产物照样被删 |
+| `这是**已知原因**（确定性）：画面渲染到一半停了（断流/崩溃），同一份代码、同样的环境重跑会停在同一个地方。`<br>`scripts/anim.mjs` 的 `knownCauseHeadline('interrupted')` | "渲染到一半停了"这一类（不是场景异常，是断流/崩溃） | 见 §1.5 的 `只渲染了 N/M 帧` 那条 —— 它的「下一步」四步就是修法 |
+| `这条不匹配任何已知的确定性根因，可能是瞬时的（磁盘满 / 内存耗尽 / 被外部中断 / GPU 掉线）。`<br>`scripts/anim.mjs` 的 `knownCauseHeadline()` 的兜底分支 | 上面两类都不匹配 ⇒ **可以重跑**，但先查那几件事 | 查磁盘 / 内存 / 外部进程，再重跑 |
 
 ### 1.5 出片（`video` / `shot` / `--segments` / `--parallel`）
 
 | 输出词 | 含义（什么情况下会看到它） | 修法 |
 |---|---|---|
-| `只渲染了 N/M 帧，成片不完整，已删除 out/…。`<br>`scripts/anim.mjs:3028`（`cmdVideo`） | 渲染侧收到的帧数没齐（断流 / 页面崩 / HMR 重载） | **最常见原因：渲染期间写了仓库里的任何文件**（连 `docs/*.md` 也不行，`AGENTS.md` §7）。修完重跑；长片子用 `--segments`（已渲好的块会跳过） |
-| `产物验收不通过，已删除 out/…：`<br>`scripts/anim.mjs:2831`（+2 处） | ffprobe 复核真的写出来的文件失败（半截流 / 没写 moov / 帧数不符 / 时间戳不均匀） | 按下面列出的具体条目修；分块模式会点名是哪一块。重跑即可，已渲好的块会跳过 |
-| `第 N 块的帧数不足（x/y 帧，a–b s），已删掉这一块。`<br>`scripts/anim.mjs:2718` | 分块渲染里某一块没渲完 | 只重跑那一块（分块默认复用其余块） |
-| `第 N 块的产物验收不通过，已删掉它：`<br>`scripts/anim.mjs:2754`（`cmdVideo` 分块路径） | 同上，但失败在 ffprobe 那一层 | 同上 |
+| `只渲染了 N/M 帧，成片不完整，已删除 out/…。` + `ffmpeg 退出码 C。最近一次进展：…` + `这是**已知原因**（确定性）：画面渲染到一半停了（断流/崩溃），同一份代码、同样的环境重跑会停在同一个地方。` + `下一步：① 先看"最近一次进展"停在哪一帧…④ 长片子用 --segments 分块…`<br>`scripts/anim.mjs` 的 `cmdVideo`（`knownCauseHeadline('interrupted')`） | 渲染侧收到的帧数没齐（断流 / 页面崩 / HMR 重载）。**它被明确归为"确定性"** —— 所以直播这条路**不给"重跑"这个建议** | 按它自己的四步：① 看"最近一次进展"停在哪一帧（那附近就是断点）；② 渲染期间动过 `tasks/`、`src/` 下**任何**文件（含 `docs/*.md`）就是根因 → `AGENTS.md` §7；③ 否则看页面是否崩溃（`--headed` 看控制台）；④ 改完用 `--segments` 分块重跑，已渲好的块会保留 |
+| `第 N 块 ffmpeg 退出码 C` + `这一类**不在"确定性失败"里** —— ffmpeg 非零退出可能是瞬时的（被外部中断 / 磁盘满 / 编码器掉线），也可能是确定性的（参数写错 / 编码器不支持）。` + `下一步：① 先看它最后打印的那几行…③ 再重跑同一条命令（其他块会跳过，只补这一块）。`<br>`scripts/anim.mjs` 的 `cmdVideo` 分块分支 | 分块渲染时 ffmpeg 自己非零退出（不是帧数不足，也不是产物不合格） | **这一档允许重跑**，但先做便宜的事：① 看 ffmpeg 最后几行（`out/<任务>/<任务>.parts/` 附近）；② 确认磁盘有空间；③ 再重跑（其他块会跳过）。与上面两档的区别就是"确定性 vs 可能瞬时" |
+| `产物验收不通过，已删除 out/…：` + `· <问题>` + `（渲染侧收到 N/M 帧，ffmpeg 退出码 C）`<br>`scripts/anim.mjs` 的 `gateFailureLines()`（`grep -n 'function gateFailureLines'`；调用点：`cmdVideo` 的 `checkVideoFile` 分支） | ffprobe 复核真的写出来的文件失败（半截流 / 没写 moov / 帧数不符 / 帧率-时间戳不齐）。**分类头是新的**（BACKLOG 1-3） | **先读分类头，它决定"要不要重跑"**：<br>· `…失败：<哪一步><什么> —— 这是**已知原因**（确定性），重跑不会有不同结果。` → 照它下面的「下一步：①…」做，**别直接重跑**；<br>· `…失败：原因未知（可能是瞬时，也可能是没被识别出来的确定性根因）。` → 先看原始 `·` 行、查磁盘空间与 `out/` 有没有被别的进程（清理 / 同步盘）碰过，再考虑重跑 |
+| `  重跑有意义（已渲好的部分会跳过）：但先按上面的「下一步」做一件事再跑，别原地空转。`<br>`  重跑**可能**有用（这类失败不保证可复现）；但先把上面那几件事查一遍再跑，别拿重跑当诊断。`<br>`  ⚠ 不要直接重跑同一条命令：这一步是确定性的，不修任何东西的重跑会得到**同样的**结果。`<br>`scripts/anim.mjs` 的 `decideGateFailure()` 的 `retryLine` | 守门报告的最后一句 —— **它本身就是"能不能靠重跑恢复"的判据**（以前一律写"重跑即可"，把人指偏过：拼接/封装那一步是确定性的，重跑只会白等） | 按它做：三种措辞 = 可重跑（分块路径，已渲好的块会跳过）/ 也许能重跑（未知原因）/ **别重跑**（确定性）。见 `docs/BACKLOG.md` 1-3 |
+| `已知原因（确定性）：这个文件 ffmpeg 没写完 —— 半截流 / 没写 moov / 0 字节，渲染进程还没 finalize 就被结束了。`（分块路径会在"这个文件"前面多一句 `第 N/M 块（a–b s）的`）<br>`已知原因（确定性）：拼接 / 封装这一步出错，画面本身没问题（各块都已经单独通过守门）。`<br>`scripts/anim.mjs` 的 `decideGateFailure()` 的 `knownNext.encode` / `.stitch` | 分类头的第一种（`kind: 'encode'` / `'stitch'`）：**确定性**失败 | 它的「下一步」里就有判据：① 帧数差在个位数且带音轨 ⇒ 查 `-af apad` 与 `-shortest` 是否**成对**（AAC 记账时长比视频短几十毫秒，会把尾巴切掉）；② 差几十上百帧 ⇒ 渲染中途断流（渲染期别写文件）；③ 拼接 ⇒ concat 必须带 `-copyts`（`docs/PERF.md`） |
+| `第 N 块的帧数不足（x/y 帧，a–b s），已删掉这一块。` + `最近一次进展：…` + `已知原因（确定性）：这一块**自己**少渲了 N 帧 —— 画面停在半路，多半是场景在某个时刻抛异常 / 页面在渲染途中崩了（HMR 重载也走这条路）。` + `下一步：① 先定位是哪一段、哪个时刻…② 出那一帧的图看…③ 渲染期间**一个文件都别写**…④ 改完再跑同一条命令…` + `其他已渲好的块会保留：…`<br>`scripts/anim.mjs` 的 `cmdVideo` 分块分支（`decideGateFailure({ phase: 'chunk' })`） | 分块渲染里某一块没渲完（画面停在半路） | **按它自己给的四步走**：① `node scripts/anim.mjs check <任务>`（点名段与时刻）→ ② `node scripts/anim.mjs still <任务> -t <时刻> --only <段>` 看图 → ③ 渲染期间一个文件都别写（含 `docs/*.md`，`AGENTS.md` §7）→ ④ 改完重跑同一条命令，**只补这一块**（已渲好的块会跳过，画面不必重渲） |
+| `第 N 块的产物验收不通过，已删掉它：` / `第 N 段的产物验收不通过：`<br>`scripts/anim.mjs` 的 `cmdVideo` 分块路径与 `--parallel` 逐段守门（都走 `gateFailureLines()`） | 这一块 / 这一段的 ffprobe 守门失败 | 与上面同一套分类头 + 「下一步」；分块路径的 `retryLine` 会说"重跑有意义（已渲好的部分会跳过）"，并行路径的 `step` 会写成 `并行渲染（这一段）` |
 | `渲染期间 src/ 或 tasks/ 下的源文件被改动了，out/… 已删除（画面混合了两个版本）`<br>`scripts/anim.mjs:3054`（`cmdVideo`） | CLI 拿 mtime 快照对比，发现模块图里的文件在渲染期间被改过 | **渲染期间一个文件都别写**；产出先落到 `out/_staging/`（`out/**` 是唯一被实测挡住的路径）。见 `AGENTS.md` §7 |
 | `渲染期间这些源文件被改动了（会触发 HMR 重载 → 推帧可能提前结束）`<br>`scripts/anim.mjs:3480` | 推流路径的同类警告 | 同上；这条只说"可能"，但产物不该被信任 |
 | `⚠ 分块参数与上一次不同，**全部重渲**（不复用旧块）：`<br>`scripts/anim.mjs:2678` | 渲染参数指纹或源文件变了 | 这是**故意的**（历史上这里静默复用旧块、秒完成还报 ✓）。确认参数是你想要的，让它重渲 |
@@ -111,7 +120,7 @@
 | `⚠ 超过 20 分钟：建议 --segments 分块（可断点续渲）…`<br>`scripts/anim.mjs:2616` | 预估超过 20 分钟 | 照做：`node scripts/anim.mjs video <任务> --segments 10` |
 | `⚠ 抖动看着像"振动"而不是手持（…）`<br>`scripts/anim.mjs:2865`（`cmdVideo` 收尾守门） | 出片收尾时抖动判据不通过（判据同 `anim shake`） | 见 §1.8；**不影响文件合格与否，产物保留**（`:2888`） |
 | `并行渲染有 N/M 段失败`<br>`scripts/anim.mjs:4075`（`--parallel`） | 并行路径里有段挂了 | 已渲好的段保留在 `out/<任务>/_parallel/`；修完重跑，日志逐段在各自目录 |
-| `逐帧数出 N 帧，期望 M 帧` / `并行拼接后的产物不合格：` / `并行拼接后的时间戳不合格：`<br>`scripts/anim.mjs:4201` `:4111` `:4119` | 拼接路径的帧数与时间戳守门（**帧数对但时间戳漂了同样是废品**） | 删掉 `out/<任务>/*.parts` 重渲；见 `docs/PERF.md` 的 `-copyts` 那一节 |
+| `逐帧数出 N 帧，期望 M 帧` / `并行拼接后的产物不合格：` / `并行拼接后的时间戳不合格：`<br>`scripts/anim.mjs` 的 `--parallel` 守门（都走 `gateFailureLines()`；时间戳那条还带 `hint: 'stitch'`） | 拼接路径的帧数与时间戳守门（**帧数对但时间戳漂了同样是废品**） | 分类头会说 `已知原因（确定性）：拼接 / 封装这一步出错，画面本身没问题（各块都已经单独通过守门）。`，并直接点名两种典型签名：尾部被切（`-af apad` 与 `-shortest` 没成对）/ 帧距不齐（concat 少 `-copyts`）。见 `docs/PERF.md` |
 
 ### 1.6 画面有没有变 / 是不是确定的
 
@@ -170,6 +179,8 @@
 | `跳过 N 个任务（没有 audio/narration.json，也没有 audio/timing.json）：…`<br>`tools/lint-narration-dup.mjs:520` | 没旁白表的任务会被安静跳过 | 若这个任务**应该有**旁白表，说明 `say` 还没跑过 → `node scripts/anim.mjs say <任务>` |
 | `建议：画面文字只放标注（名词 / 数字 / 出处），句子交给旁白与字幕。`<br>`tools/lint-narration-dup.mjs:535` | 收尾建议行 | 照做；`docs/CAPTIONS.md` |
 | `没有这些任务：… 现有任务：…`（退出码 2）<br>`tools/lint-narration-dup.mjs:437` | 任务名打错 | 用 `node scripts/anim.mjs tasks` 列名字 |
+| `词级时间戳与原文有 N 个实义字符没对应（不是标点："句"），已按顺序对齐（真时间戳保住了）`<br>`scripts/lib/say.mjs` 的 `alignWords` 调用点（`grep -n '实义字符没对应' scripts/lib/say.mjs`） | `anim say` 的**词级时间戳对齐**：驱动（edge-tts）漏报了某个**实义字符**（汉字/字母/数字）。**只差标点不再报警**（驱动根本不报标点，上一版拿"跳过的字符数 > 0"当判据 ⇒ 47/47 句全命中，把真异常淹没了，BACKLOG 1-2） | 这条是**提示不是失败**：真时间戳保住了（没有退化成按字数近似）。要查就核对那一句的 `narration.json` 里 `lines[].words` 与原文；只有 `词级时间戳不可用：…` 才是真失败（那时 `approx = true`，字幕/卡拉OK 会按字数近似） |
+| `按字数近似切分（没有真时间戳）` / `驱动没有写出词级时间戳` / `词级时间戳不可用：…`<br>`scripts/lib/say.mjs` 的 `note` 分支 | 词级时间戳这一层**没拿到真数据** | 检查 TTS 驱动（`tools/tts-edge.py` / `--tts`）是否输出了 `words`；离线回归：`node tools/test-say.mjs`（不需要联网） |
 
 ### 1.10 探头与量具（`tools/`）
 
@@ -238,6 +249,22 @@
 | `找不到 ffmpeg。装一个，或用 ANIM_FFMPEG 环境变量指定路径。`<br>`scripts/anim.mjs:2932` | ffmpeg 不在 PATH | 装 ffmpeg，或设 `ANIM_FFMPEG` / `ANIM_FFPROBE`（`AGENTS.md` §1 前置条件） |
 | `✓ N 项通过` / `✗ N 项通过，M 项失败`（`test-style`）；`全部 N 项通过`（`test-cam-math` / `test-blocks`）；`PASS/FAIL` 逐项（`test-timeline-guard` / `test-say` / `test-karaoke`）<br>`tools/test-style.mjs:120` `tools/test-cam-math.mjs:387` `tools/test-blocks.mjs:163` `tools/test-timeline-guard.mjs:123` `tools/test-say.mjs:45` `tools/test-karaoke.mjs:25` | 纯逻辑单测的收尾口径（不需要 GPU / 联网） | 有失败项时退出码 1；这些是改引擎前**先跑**的（`AGENTS.md` §10 的清单里有它们） |
 
+### 1.14 音频响度守门（LUFS / true peak / LRA，`docs/BACKLOG.md` 1-20）
+
+> ⚠ **状态（写表时）**：库已落地（提交 `ca53061`，`scripts/lib/media.mjs`），离线回归是 `tools/test-loudness.mjs`。
+> **`anim mix` / `anim check` 的打印点还没接上** —— 全仓库调用 `formatLoudness()` 的只有那个回归脚本。
+> 所以下面这些词**目前主要会在这个量具的输出里看到**；等接线落地（1-20 的后半），它们会出现在 `mix` / `check` 里。
+> 那句纪律值得先记住：**"你听不见，就说出这一点并报数字"** —— 这一层以前是唯一靠耳朵的验证。
+
+| 输出词 | 含义（什么情况下会看到它） | 修法 |
+|---|---|---|
+| `−13.8 LUFS / −1.2 dBTP / LRA 4.1`<br>`scripts/lib/media.mjs` 的 `formatLoudness()` | 一行读数：**整合响度**（LUFS）/ **真峰**（dBTP，考虑 DAC 重建后的采样间峰值，**不是**采样峰值）/ **响度范围**（LRA） | 靶子是 `LOUDNESS_TARGET = { i: -14, tp: -1, lra: 11 }`（`scripts/lib/media.mjs`）。**这一层只报数字、不自动归一化** —— 要不要重混由你决定 |
+| `达标（-14 LUFS / -1 dBTP）`<br>`scripts/lib/media.mjs` 的 `assessLoudness().verdict` | 判据通过（`tier === 'ok'`） | 无事 |
+| `-13.8 LUFS 离目标 -14 差了 +0.2 LU`<br>`scripts/lib/media.mjs` 的 `assessLoudness()`（violations，`kind: 'loudness'`） | 响度偏差超容差（**太响和太轻都算**；平台会把更响的压下来） | 调混音总电平（`anim mix` 的输出 / `task.audio`），别用 `exposure` 那类画面参数 |
+| `真峰 x.xx dBTP 超过上限 -1 dBTP：平台/有损转码会削顶`<br>`scripts/lib/media.mjs` 的 `assessLoudness()`（`kind: 'true-peak'`） | 真峰越界（**上限而非等号**：轻很多不算越界） | 降总电平 / 加限幅；这是"听众那里会不会削"的问题，与采样峰值无关 |
+| `量不出整合响度（input_i = …）—— 文件是静音、或者根本不是音频`<br>`scripts/lib/media.mjs` 的 `assessLoudness()`（`kind: 'nan'`） | 数字不是有限数 | 检查音频文件本身（静音 / 格式不支持）；⚠ 这是**没验**，不是"达标" |
+| `LRA` 超 11 | 响度范围过宽（口播 + 音乐床天然就宽） | **不算错误**，只是提示"忽大忽小"：见 `scripts/lib/media.mjs` 的 `LOUDNESS_TARGET` 注释 |
+
 ---
 
 ## 2. 退出码语义：哪个命令非零代表什么
@@ -281,7 +308,10 @@
 来自三个外部参考项目的同一条结论：浏览器没跑起来时那几个 section 是**空的**，而"空输出读起来像一份干净的报告"
 （`scripts/anim.mjs:181` 附近引用了对方的原话 *empty, not clean*）。所以**看到下面任何一条，都不许当成"通过"**：
 
-**① `check` 里"没跑"的行**（`docs/BACKLOG.md` 1-19；写这张表时正在落地，见下）
+**① `check` 里"没跑"的行**（`docs/BACKLOG.md` 1-19，**已提交**：`9693291` → `afccab1` → `5432cf6`）
+
+> 这一组现在也逐条收在主表 **§1.1**（`skipped:` 段、结论行的「另有 N 项没跑」、`--strict`）—— 那里是"看到它怎么做"，
+> 这里是"为什么不能把它读成通过"。
 
 | 行 | 它实际在说 |
 |---|---|
@@ -295,12 +325,11 @@
 | `--quick：每段只采 50% 一个点、只跑单子帧`（`cmdCheck`） | ⚠ 这一次没看多子帧、没看入场头 1 秒 |
 | `· samples=1：这是单子帧，**只代表静止画面**`（`cmdStill`） | ⚠ 单帧图不代表成片 |
 
-> ⚠ **这一层在写表时正在落地**（`docs/BACKLOG.md` 1-19；写完之后已经提交：
-> `9693291` → `afccab1` → `5432cf6`）：
+> ⚠ **这一层的状态**：`docs/BACKLOG.md` 1-19 已提交（`9693291` → `afccab1` → `5432cf6`），
 > 上面那几行来自那次改动，原文可在 `scripts/anim.mjs` 的 `formatSkipped()` / `checkVerdictLine()` /
-> `pushSkipped()` 三个函数里看到（写表时已按提交后的代码逐条 grep 复核过，都在）。
+> `pushSkipped()` 三个函数里看到（已按提交后的代码逐条 grep 复核过，都在；主表 §1.1 是同一批词的"怎么做"）。
 > 若将来被回退，这几行会消失，**但"背景守门不可用 / 旁白复述检查跳过 / 用例没有拿到读数 / --quick / samples=1"
-> 这五类"没跑"是一直都在的** —— 那五类才是这张表真正要提醒的读法。
+> 这五类"没跑"是一直都在的** —— 那五类才是这一节真正要提醒的读法。
 > 另一条既有事实：`skipped` **默认不影响退出码**（回归清单依赖它），要 gate 就显式加 `--strict`。
 
 **② 不打印 `skipped:`、但同样"没验"的地方**
@@ -328,6 +357,11 @@
 3. 修法列**只写动作**：命令 / 文档章节号 / 代码位置。写"多半是 XX"属于第二列的职责。
 4. 一个词如果有**多条**修法，按"先试哪条"排序（最便宜的在前）。
 5. `docs/` 下的章节号要指向**存在**的文件与章节；文档归档时同步改表（见 §5 的已知分叉）。
+6. **已知还没落地、落地后按上面第 1 条补登记**（写表时逐个 grep 过，确认代码里还没有）：
+   - `anim shots --json`（`cmdShots` 里还没有 json 分支）；
+   - `anim note`（分发用的 `commands` 表里还没有这个命令）。
+   已经落地但**打印点还没接**的：§1.14 的响度行（库与回归在 `scripts/lib/media.mjs` / `tools/test-loudness.mjs`，
+   `anim mix` / `check` 还没调用它）。
 
 ---
 
