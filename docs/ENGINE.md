@@ -1781,6 +1781,12 @@ node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这�
   `✗ 没有镜头模板 "…"。可用的：…`、退出码 1 —— 别去解析人读的那张表。
 - 实现：`scripts/anim.mjs` 的 `shotsCatalog()`（**纯函数**）。离线断言直接
   `await import('./scripts/anim.mjs')` 拿它 —— 本文件有 `IS_MAIN` 入口门，import 不会执行任何命令。
+- ⚠ **落盘时别用 PowerShell 的 `>`**：它会给文件加 BOM / 写成 UTF-16，
+  `JSON.parse` 当场就炸（实测 `node scripts/anim.mjs shots --json > x.json` 之后
+  `SyntaxError: Unexpected token '\uFFFD'` —— 而 CLI 的输出本身是干净的）。
+  判据很简单：**载荷的第一个字节必须是 `{`（0x7B）**。要落文件就在 `node -e` 里
+  `execFileSync(process.execPath, ['scripts/anim.mjs','shots','--json'], { encoding: 'utf8' })`
+  拿到字符串再 `writeFileSync(…, 'utf8')`；这条对 `anim note --list --json` 同样适用。
 
 ---
 
