@@ -160,7 +160,16 @@ process.on('SIGTERM', () => { cleanupChildren(); process.exit(143); });
 const IS_MAIN = (() => {
   const entry = process.argv[1];
   if (!entry) return false;
-  try { return pathToFileURL(entry).href === import.meta.url; } catch { return false; }
+  const canon = (u) => {
+    try { return decodeURIComponent(u).replace(/\\/g, '/').toLowerCase(); } catch { return String(u).toLowerCase(); }
+  };
+  try {
+    const self = canon(fileURLToPath(import.meta.url));
+    const run = canon(path.resolve(entry));
+    if (self === run) return true;
+    // Windows 的路径大小写不敏感，盘符/目录大小写不一致也算同一个文件
+    return canon(pathToFileURL(path.resolve(entry)).href) === canon(import.meta.url);
+  } catch { return false; }
 })();
 
 /* ------------------------------ 空 ≠ 干净（BACKLOG 1-19）与守门措辞（1-3）：纯函数 */
@@ -1263,12 +1272,12 @@ async function cmdCheck() {
           log(`\n背景守门：${world.results.length} 个交叠段都铺满了整帧背景（其中 ${risky.length} 段声明了转场/共享背景）`);
         }
       } else {
-        // 「空 ≠ 干净」：审计跑通了、但一个段都没被翻出来。以前这里**一行都不打**，
-        // 输出里于是完全看不出"背景守门根本没生效"。
-        const nSeg = info.timeline?.length ?? 0;
-        warn(`\n⚠ 背景守门没有翻出任何一段（本会话加载了 ${nSeg} 段）—— 这次"没报问题"是因为**没东西可查**，不是因为背景都对。`);
-        warn('  → 时间线里确实没有交叠段/共享背景时这是正常的；否则说明 worldAudit 这条路挂了，去查页面侧。');
-        pushSkipped(skipped, '背景守门（worldAudit）', `跑了，但返回 0 段（本会话加载 ${nSeg} 段）—— 没有可查的对象，不能算通过`);
+        // 「空 ≠ 干净」：审计跑通了、但一个交叠段都没被翻出来 —— 也就是**零条断言**。
+        // 以前这里一行都不打，输出里于是看不出"背景守门这次等于没验"。
+        const nSeg = world?.timeline ?? info.timeline?.length ?? 0;
+        warn(`\n⚠ 背景守门这次**一条都没验**：时间线 ${nSeg} 段里没有"与前一段交叠"的段（--only 之后更常见）。`);
+        warn('  → 这不是"背景都对"，是"没有可查的对象"；有转场的片子这一行不该出现。');
+        pushSkipped(skipped, '背景守门（worldAudit）', `跑了，但零条断言（时间线 ${nSeg} 段里没有交叠段，--only 之后更常见）—— 不能算通过`);
       }
     } catch (err) {
       if (err && err.readable) throw err;      // 页面失联：照实抛出，不要吞成"背景守门不可用"
