@@ -61,6 +61,7 @@ const ITEMS = [
   //   与 `check` 的警告项（见 scripts/anim.mjs 里那段的注释）。
   { name: 'unit:style', cmd: ['tools/test-style.mjs'], note: '风格包 + 字幕层：合并规则 / 默认值一致 / "不写 style 时零变化"的底线（54 项）' },
   { name: 'unit:blocks', cmd: ['tools/test-blocks.mjs'], note: '方块世界 kit：面朝向判据 / 深度排序 / 世界切片 / 摄影机关键帧' },
+  { name: 'unit:check-skipped', cmd: ['tools/test-check-skipped.mjs'], note: '1-19「空≠干净」：skipped 收集/聚合/结论行 + 接线自检（24 项）' },
   { name: 'harness:demo', cmd: ['tools/scene-harness.mjs', 'demo'], note: '离线跑场（假 ctx，不起 Chrome，0.1s）：未定义变量 / 确定性 / 文字出画' },
   { name: 'harness:style-sampler', cmd: ['tools/scene-harness.mjs', '_style-sampler'], note: '风格采样器：配置档 4 段 + 风格解析走通' },
 
