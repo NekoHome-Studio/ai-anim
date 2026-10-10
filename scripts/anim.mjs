@@ -4426,7 +4426,8 @@ function cmdNote() {
 
   // 读：文件不存在 = 全新（不是错）；存在但坏了 → 报行列 + 修法（绝不当成"没有评论"）
   let cur = { notes: [], extra: {}, task };
-  if (existsSync(file)) {
+  const hasFile = existsSync(file);
+  if (hasFile) {
     let raw;
     try { raw = readFileSync(file, 'utf8'); } catch (err) { die(`${rel} 读不动：${firstLine(err)}`); }
     try { cur = parseNotesJson(raw, { file: rel }); } catch (err) { die(String(err.message)); }
@@ -4439,12 +4440,14 @@ function cmdNote() {
     const s = notesSummary(cur.notes);
     if (flag('json')) {
       log(JSON.stringify({
-        schema: NOTES_SCHEMA, task, file: rel,
+        schema: NOTES_SCHEMA, task, file: rel, exists: hasFile,
         total: s.total, open: s.open, resolved: s.resolved, notes: cur.notes,
       }, null, 2));
       return;
     }
-    log(`${rel} —— ${s.total} 条（${s.open} 条未解决${s.resolved ? `，${s.resolved} 条已解决` : ''}）`);
+    // 说清"文件还没建"与"文件在、但没有条目"的区别：它的**空**和它的**坏**都不是"干净"（BACKLOG 1-19 的同一条纪律）
+    log(`${rel} —— ${s.total} 条（${s.open} 条未解决${s.resolved ? `，${s.resolved} 条已解决` : ''}）`
+      + (hasFile ? '' : ' · 文件还没建（第一条评论会建它）'));
     for (const l of formatNoteLines(cur.notes)) log(l);
     if (!s.total) log(`\n  记一条：node scripts/anim.mjs note ${task} "第 12.5 秒这里字幕太小" --at 12.5`);
     return;
