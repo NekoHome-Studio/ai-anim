@@ -400,6 +400,258 @@ async function main() {
   }
 
   console.log(`\n（§8 扫了 ${files.length} 个文件：${files.map((f) => path.relative(shotsDir, f)).join(', ') || '（空）'}）`);
+
+  /* ---------------- §9 声明式 spec（BACKLOG 1-21） ---------------- */
+  //
+  // 为什么要有这一节：1-21 给每个模板补了 `spec`（参数类型 / requires / outputs），
+  // 而"声明"这种东西最容易变成**和代码各说各话的注释** —— 它不会报错，只会让下游
+  // （`anim shots --json` 的读者、`check` 的依赖前置校验）按错的声明做判断。
+  // 所以这里把 spec 与 `defaults` / `meta.params` / 场景对象**逐项对上**。
+  console.log('\n§9 声明式 spec：参数类型 / requires / outputs（BACKLOG 1-21）');
+
+  const vocab = M.SHOT_REQUIRES && typeof M.SHOT_REQUIRES === 'object' ? Object.keys(M.SHOT_REQUIRES) : null;
+  const visuals = Array.isArray(M.SHOT_VISUALS) ? M.SHOT_VISUALS : null;
+  check('SHOT_REQUIRES 词表在（requires 里的令牌要有定义，机器读者才知道它是什么意思）',
+    !!vocab && vocab.length > 0, `SHOT_REQUIRES = ${JSON.stringify(M.SHOT_REQUIRES)}`);
+  check('SHOT_VISUALS 在（outputs.visual 的取值范围）', !!visuals && visuals.length > 0,
+    `SHOT_VISUALS = ${JSON.stringify(M.SHOT_VISUALS)}`);
+
+  /** `spec.params` 声明的类型与 `defaults` 里的实际值是否自洽（"spec 与 defaults 不矛盾"）。 */
+  const typeOk = (type, v) => {
+    switch (type) {
+      case 'string': return typeof v === 'string';
+      case 'number': return typeof v === 'number' && Number.isFinite(v);
+      case 'boolean': return typeof v === 'boolean';
+      case 'number[]': return Array.isArray(v) && v.length > 0 && v.every((x) => Number.isFinite(x));
+      case '[number, number]': return Array.isArray(v) && v.length === 2 && v.every((x) => Number.isFinite(x));
+      case 'string[2]': return Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'string');
+      default: return false;
+    }
+  };
+
+  const specProblems = [];
+  for (const name of TEMPLATES) {
+    const factory = M.SHOTS?.[name];
+    const spec = factory?.spec;
+    const defaults = factory?.defaults ?? {};
+    const metaParams = Array.isArray(factory?.meta?.params) ? factory.meta.params : [];
+    const scene = scenes.get(name);
+
+    if (!spec || typeof spec !== 'object') { specProblems.push(`${name}: 没有 spec`); continue; }
+    if (!spec.params || typeof spec.params !== 'object' || Array.isArray(spec.params)) {
+      specProblems.push(`${name}: spec.params 不是"参数名 → 类型"的对象`);
+    } else {
+      const specNames = Object.keys(spec.params).sort();
+      const defNames = Object.keys(defaults).sort();
+      if (JSON.stringify(specNames) !== JSON.stringify(defNames)) {
+        specProblems.push(`${name}: spec.params 的键集合 ≠ defaults 的键集合（${setDiff(Object.keys(spec.params), Object.keys(defaults))}）`);
+      }
+      for (const p of metaParams) {
+        if (spec.params[p.name] !== p.type) {
+          specProblems.push(`${name}.${p.name}: spec 说 ${JSON.stringify(spec.params[p.name])}，meta.params 说 ${JSON.stringify(p.type)}`);
+        }
+      }
+      for (const [k, t] of Object.entries(spec.params)) {
+        if (!(k in defaults)) continue;   // 没有默认值 = required:true，此时无从对照
+        if (!typeOk(t, defaults[k])) {
+          specProblems.push(`${name}.${k}: spec 声明 ${JSON.stringify(t)}，而 defaults 里是 ${JSON.stringify(defaults[k])}`);
+        }
+      }
+    }
+    if (!Array.isArray(spec.requires)) {
+      specProblems.push(`${name}: spec.requires 不是数组`);
+    } else {
+      if (new Set(spec.requires).size !== spec.requires.length) specProblems.push(`${name}: spec.requires 里有重复项`);
+      const unknown = vocab ? spec.requires.filter((t) => !vocab.includes(t)) : [];
+      if (unknown.length) specProblems.push(`${name}: requires 里有词表之外的令牌：${unknown.join(', ')}（词表：${(vocab ?? []).join(' / ')}）`);
+    }
+    if (!spec.outputs || typeof spec.outputs !== 'object') {
+      specProblems.push(`${name}: 没有 spec.outputs`);
+    } else {
+      if (visuals && !visuals.includes(spec.outputs.visual)) {
+        specProblems.push(`${name}: outputs.visual = ${JSON.stringify(spec.outputs.visual)}（合法值：${visuals.join(' / ')}）`);
+      }
+      // 声明必须与**运行时的场景对象**一致：`handlesTransition` 由模板自己在场景对象上给出，
+      // spec 里那一份只是给机器读的副本 —— 两者不一致就是"声明与代码各说各话"。
+      if (spec.outputs.handlesTransition !== (scene?.handlesTransition === true)) {
+        specProblems.push(`${name}: spec.outputs.handlesTransition = ${JSON.stringify(spec.outputs.handlesTransition)}，`
+          + `而场景对象的 handlesTransition = ${JSON.stringify(scene?.handlesTransition)}`);
+      }
+    }
+  }
+  check('8 个模板的 spec 都在，且与 defaults / meta.params / 场景对象逐项一致',
+    specProblems.length === 0, specProblems.slice(0, 6).join('\n            '));
+
+  // 依赖声明本身：`wave` / `pulse` / `grid` 读 ctx.music（§14.3），这是 1-21 的**动机** ——
+  // 写成断言，免得以后被"顺手删掉"而没人发现（删掉它 = check 又只能等出图才发现全黑）。
+  const MUSIC_SHOTS = ['wave', 'pulse', 'grid'];
+  const musicMiss = MUSIC_SHOTS.filter((n) => !(M.SHOTS?.[n]?.spec?.requires ?? []).includes('music'));
+  check(`wave / pulse / grid 的 spec.requires 里都有 'music'`, musicMiss.length === 0,
+    `这些没有：${musicMiss.join(', ')}（它们的 render 读 ctx.music 的包络/打击事件，见 docs/ENGINE.md §14.3）`);
+  const analyzeMiss = MUSIC_SHOTS.filter((n) => !(M.SHOTS?.[n]?.spec?.requires ?? []).includes('analyze'));
+  check(`wave / pulse / grid 的 spec.requires 里都有 'analyze'`, analyzeMiss.length === 0,
+    `这些没有：${analyzeMiss.join(', ')}（没有预计算的 analysis.json 时引擎会退到浏览器里现算）`);
+  const quiet = TEMPLATES.filter((n) => !MUSIC_SHOTS.includes(n));
+  const noise = quiet.filter((n) => (M.SHOTS?.[n]?.spec?.requires ?? []).includes('music'));
+  check('另外 5 个模板不声明 music（多声明一条 = 用它的任务会被 check 假报"没配 audio"）', noise.length === 0,
+    `这些多声明了：${noise.map((n) => `${n}${JSON.stringify(M.SHOTS?.[n]?.spec?.requires)}`).join(', ')}`);
+  check("whip 声明了 requires: ['under']（它读上一段的成帧，§14.4）",
+    (M.SHOTS?.whip?.spec?.requires ?? []).includes('under'),
+    `whip.spec.requires = ${JSON.stringify(M.SHOTS?.whip?.spec?.requires)}`);
+
+  const listedSpec = TEMPLATES.filter((n) => {
+    const e = byName.get(n);
+    return !e || !Array.isArray(e.requires) || !e.outputs;
+  });
+  check('listShots() 把 spec 带出来了（requires / outputs，--json 就是靠它）', listedSpec.length === 0,
+    `这些条目没带：${listedSpec.join(', ')}`);
+
+  /* ---------------- §10 依赖前置校验（BACKLOG 1-21 的后半） ---------------- */
+  //
+  // ① 纯函数的行为（判据 + 消息该进 errs 还是 skipped）；
+  // ② **真实任务**跑一遍：仓库里唯一用这三个模板的 `beat` 必须是干净的（否则这条新守门
+  //    会把 `tools/regress-all.mjs` 里那 11 个 `check:*` 染红 —— 那是"假报"最贵的形态）；
+  // ③ **接线自检**：读 `scripts/anim.mjs` 的源码，证明 `cmdCheck` 真的调了它、而且 errs 真的接上了
+  //    （1-19 的教训：函数写对了但没接线 = 功能等于没做）。
+  console.log('\n§10 镜头模板的依赖前置校验（check 用它提前报"用了 wave 却没配 audio"）');
+  const A = await load('../scripts/anim.mjs');
+  const hasApi = !!A.mod
+    && ['scanShotUsage', 'shotDependencyIssues', 'shotDependencyReport', 'taskShotSources', 'shotDependencyFacts']
+      .every((k) => typeof A.mod[k] === 'function');
+  check('scripts/anim.mjs 导出了依赖校验那套纯函数（可离线断言）', hasApi,
+    A.err ? `加载失败：${A.err}` : '缺导出（IS_MAIN 入口门还在吗？）');
+
+  if (hasApi) {
+    const { scanShotUsage, shotDependencyIssues, shotDependencyReport, SHOT_DEP_WHAT } = A.mod;
+    const specOf = (n) => M.SHOTS?.[n]?.spec;
+
+    // ① 静态扫描：两种写法都认，注释里的举例不算
+    const scanned = scanShotUsage([{
+      file: 'tasks/x/scenes/a.js',
+      text: [
+        '// export default shot(\'wave\', { id: \'commented-out\' });',
+        '/* { type: \'grid\' } —— 文件头注释里的举例，不算用过 */',
+        'export default shot(\'pulse\', { title: \'t\' });',
+        'const node = { type: \'chart\', values: [1] };',
+      ].join('\n'),
+    }], TEMPLATES);
+    const got = scanned.map((u) => `${u.shot}@${u.line}`).join(' ');
+    check("扫描认 shot('名字') 与 { type: '名字' }，且不吃注释里的举例",
+      JSON.stringify(scanned.map((u) => u.shot)) === JSON.stringify(['pulse', 'chart']) && scanned[0].line === 3,
+      `扫到的是 ${got}（期望 pulse@3 chart@4）`);
+    const unknownOnly = scanShotUsage([{ file: 'x', text: "shot('nope'); { type: 'quote' }" }], TEMPLATES);
+    check('未知模板名不在这里报（那是 timeline.js / shot() 的活，报两遍反而没人知道信哪条）',
+      unknownOnly.length === 0, `扫到了 ${JSON.stringify(unknownOnly)}`);
+
+    const usageRows = (rows) => rows.map((u) => ({ ...u, requires: specOf(u.shot)?.requires ?? [] }));
+    const waveUse = usageRows([{ shot: 'wave', file: 'tasks/x/scenes/a.js', line: 3 }]);
+
+    // ② 两档严重性：没配 audio = error（画面不可能对）；没跑 analyze = hint（"这一步还没跑"）
+    const noAudio = shotDependencyIssues(waveUse, specOf, { audioDeclared: false });
+    check('用了 wave 但任务没配 audio ⇒ error（进 errs，不是"提示"）',
+      noAudio.length === 1 && noAudio[0].level === 'error' && noAudio[0].kind === 'missing-audio',
+      JSON.stringify(noAudio.map((i) => [i.level, i.kind])));
+    check('这条 error 里点名模板名、文件:行号、以及"怎么修"',
+      !!noAudio[0] && noAudio[0].shot === 'wave' && noAudio[0].where === 'tasks/x/scenes/a.js:3'
+      && /audio/.test(noAudio[0].fix) && /analyze/.test(noAudio[0].fix),
+      JSON.stringify(noAudio[0] ?? null));
+
+    const noAnalysis = shotDependencyIssues(waveUse, specOf, {
+      audioDeclared: true, audioPath: 'tasks/x/audio/bed.mp3',
+      analysisExpected: 'tasks/x/audio/bed.analysis.json', analysisFile: null,
+    });
+    check('配了 audio 但还没跑 analyze ⇒ hint（"这一步还没跑"，不是"坏了"）',
+      noAnalysis.length === 1 && noAnalysis[0].level === 'hint' && noAnalysis[0].kind === 'missing-analysis',
+      JSON.stringify(noAnalysis.map((i) => [i.level, i.kind])));
+    check('没配 audio 时不再补报一条"没跑 analyze"（只报根因）',
+      noAudio.every((i) => i.kind !== 'missing-analysis'),
+      JSON.stringify(noAudio.map((i) => i.kind)));
+
+    const satisfied = shotDependencyIssues(waveUse, specOf, {
+      audioDeclared: true, audioPath: 'tasks/x/audio/bed.mp3',
+      analysisExpected: 'tasks/x/audio/bed.analysis.json', analysisFile: 'tasks/x/audio/bed.analysis.json',
+    });
+    check('都满足时一条问题都不报（否则新守门会变成噪音）', satisfied.length === 0,
+      JSON.stringify(satisfied));
+
+    const twice = shotDependencyIssues(usageRows([
+      { shot: 'wave', file: 'tasks/x/scenes/a.js', line: 3 },
+      { shot: 'wave', file: 'tasks/x/scenes/b.js', line: 9 },
+    ]), specOf, { audioDeclared: false });
+    check('同一个模板在多个段里出现只报一次（根因是任务级的）', twice.length === 1,
+      `报了 ${twice.length} 条：${JSON.stringify(twice.map((i) => i.where))}`);
+
+    // ③ 报告：error → errors（非零退出），hint → skipped（默认不改退出码）
+    const repErr = shotDependencyReport({ scanned: 1, usage: waveUse, issues: noAudio, facts: { audioDeclared: false } });
+    check('report：error 进 errors、不进 skipped（退出码语义与 1-19 一致）',
+      repErr.errors.length === 1 && repErr.skipped.length === 0 && /镜头模板依赖/.test(repErr.errors[0]),
+      JSON.stringify({ errors: repErr.errors, skipped: repErr.skipped }));
+    const repHint = shotDependencyReport({
+      scanned: 1, usage: waveUse, issues: noAnalysis, facts: { audioDeclared: true },
+    });
+    check('report：hint 进 skipped（what 可被 formatSkipped 聚合）、不进 errors',
+      repHint.errors.length === 0 && repHint.skipped.length === 1 && repHint.skipped[0].what === SHOT_DEP_WHAT,
+      JSON.stringify({ errors: repHint.errors, skipped: repHint.skipped }));
+    const repNone = shotDependencyReport({ scanned: 3, usage: [], issues: [], facts: {} });
+    check('report：任务一个模板都没用时**明说"没有可查的对象"**（"空 ≠ 干净"，1-19）',
+      repNone.lines.some((l) => /没有可查的对象/.test(l.text)),
+      JSON.stringify(repNone.lines.map((l) => l.text)));
+    const repOnly = shotDependencyReport({ scanned: 1, usage: waveUse, issues: [], facts: {}, only: 'chart' });
+    check('report：--only 时说明"这是整个任务范围的静态扫描"',
+      repOnly.lines.some((l) => /--only chart/.test(l.text) && /整个任务/.test(l.text)),
+      JSON.stringify(repOnly.lines.map((l) => l.text)));
+    const repUnder = shotDependencyReport({
+      scanned: 1,
+      usage: usageRows([{ shot: 'whip', file: 'tasks/x/scenes/w.js', line: 7 }]),
+      issues: [],
+      facts: {},
+    });
+    check("report：声明了但**没接线**的令牌（'under'）要明说「这次没有验它」（不许把没查说成「都满足」）",
+      repUnder.lines.some((l) => /还没接线/.test(l.text) && /'under'/.test(l.text))
+      && repUnder.lines.some((l) => /能查的那几条依赖都满足/.test(l.text))
+      && repUnder.skipped.length === 0 && repUnder.errors.length === 0,
+      JSON.stringify(repUnder.lines.map((l) => l.text)));
+
+    // ④ 真实任务：唯一用 wave/pulse/grid 的 beat 必须干净（有 audio + 有 analysis.json）
+    const realTasks = ['beat', 'demo', '_config-lab'];
+    const notClean = [];
+    for (const t of realTasks) {
+      const src = A.mod.taskShotSources(t);
+      const use = usageRows(scanShotUsage(src, TEMPLATES));
+      const facts = A.mod.shotDependencyFacts(t);
+      const iss = shotDependencyIssues(use, specOf, facts);
+      if (iss.length) notClean.push(`${t}: ${iss.map((i) => `${i.kind}(${i.shot})`).join(', ')}`);
+    }
+    check('真实任务 beat / demo / _config-lab 一条依赖问题都没有（不产生假报）',
+      notClean.length === 0, notClean.join('；'));
+    const beatUsage = scanShotUsage(A.mod.taskShotSources('beat'), TEMPLATES).map((u) => u.shot);
+    check('真的扫到了 beat 的三个音乐模板（扫描器不是"扫了个寂寞"）',
+      MUSIC_SHOTS.every((n) => beatUsage.includes(n)),
+      `beat 扫到的是 ${JSON.stringify(beatUsage)}`);
+
+    // ⑤ 接线自检：cmdCheck 里真的调了它，而且 errs 真的并上了（1-19 的教训）
+    const animSrc = readFileSync(path.join(ROOT, 'scripts', 'anim.mjs'), 'utf8');
+    const start = animSrc.indexOf('async function cmdCheck(');
+    const end = animSrc.indexOf('/** 把若干时刻渲染成一张接触表', start);
+    const body = start > 0 && end > start ? animSrc.slice(start, end) : '';
+    check('cmdCheck 里真的接了依赖前置校验（不是"函数写了没人调"）',
+      /shotDependencyReport\(/.test(body) && /shotDependencyIssues\(/.test(body)
+      && /taskShotSources\(task\)/.test(body),
+      start > 0 ? 'cmdCheck 里找不到这几处调用' : '定位不到 cmdCheck 函数体');
+    check('依赖校验的 error 并进了 errs（`const errs = [...depErrs, ...reportErrors(info)]`）',
+      /const depErrs = \[\]/.test(body) && /const errs = \[\.\.\.depErrs, \.\.\.reportErrors\(info\)\]/.test(body),
+      '那两行不在（error 会被静默丢掉 ⇒ 该红的没红）');
+    check('依赖校验的 hint 走了 pushSkipped（"这一步还没跑"要能被看见，但不改退出码）',
+      /pushSkipped\(skipped, s\.what, s\.why\)|pushSkipped\(skipped, SHOT_DEP_WHAT/.test(body),
+      'cmdCheck 里没有把 dep.skipped 接进 skipped 收集器');
+    check('依赖校验在 openSession **之前**（否则又变成"等出图才发现全黑"）',
+      body.indexOf('shotDependencyReport(') < body.indexOf('await openSession('),
+      '调用点在 openSession 之后 —— 那就失去了"前置"的意义');
+    check("shotsCatalog 带上了 requires / outputs / requireTokens（`anim shots --json` 的载荷）",
+      /'requires' in s \? \{ requires: s\.requires/.test(animSrc)
+      && /requireTokens: \{ \.\.\.requireTokens \}/.test(animSrc),
+      'shotsCatalog 里没有转发这三个字段');
+  }
 }
 
 await main();

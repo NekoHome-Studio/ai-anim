@@ -1463,6 +1463,332 @@ async function cmdGpu() {
   } finally { await closeSession(); }
 }
 
+/* ---------------- 镜头模板的依赖前置校验（BACKLOG 1-21 / docs/ENGINE.md §14.9）：纯函数区 */
+
+/**
+ * 把 JS 源码里的**注释换成空格**（长度与换行原样保留 ⇒ 行号不变），**字符串字面量原样留着**。
+ *
+ * 为什么需要它：依赖扫描要认的是 `shot('wave', …)` / `{ type: 'wave', … }` 里的那个**字符串**，
+ * 所以不能像 `tools/test-shots.mjs` 的 `maskNonCode()` 那样把字符串一起抹掉；但注释里的举例
+ * 绝不能被当成"真的用了这个模板"（`tasks/_config-lab/task.config.mjs` 的文件头就写着
+ * `{ type: 'chart', …, post }`，`tasks/beat/task.config.mjs` 的注释里也提到过模板名）。
+ *
+ * 模板字符串（GLSL）按普通字符串处理：里面的 `//` 是 shader 注释，不是 JS 注释。
+ */
+function blankJsComments(src) {
+  const s = String(src ?? '');
+  const out = s.split('');
+  let i = 0;
+  let state = 'code';   // code | line | block | ' | " | `
+  while (i < s.length) {
+    const c = s[i];
+    const d = i + 1 < s.length ? s[i + 1] : '';
+    if (state === 'code') {
+      if (c === '/' && d === '/') { out[i] = ' '; out[i + 1] = ' '; i += 2; state = 'line'; continue; }
+      if (c === '/' && d === '*') { out[i] = ' '; out[i + 1] = ' '; i += 2; state = 'block'; continue; }
+      if (c === "'" || c === '"' || c === '`') { state = c; i++; continue; }
+      i++; continue;
+    }
+    if (state === 'line') {
+      if (c === '\n') { state = 'code'; i++; continue; }
+      out[i] = ' '; i++; continue;
+    }
+    if (state === 'block') {
+      if (c === '*' && d === '/') { out[i] = ' '; out[i + 1] = ' '; i += 2; state = 'code'; continue; }
+      if (c !== '\n') out[i] = ' ';
+      i++; continue;
+    }
+    // 字符串：内容保留（我们找的就是字符串里的模板名），只处理转义与结尾引号
+    if (c === '\\') { i += 2; continue; }
+    if (c === state) { state = 'code'; i++; continue; }
+    i++;
+  }
+  return out.join('');
+}
+
+/**
+ * 纯函数：从任务源码文本里找出**用了哪些镜头模板**（`docs/ENGINE.md` §3.2 / §14.8 的两种写法）。
+ *
+ *   · 手写场景：`export default shot('chart', { … })`      → 认 `shot('名字'`
+ *   · 配置档：  `{ type: 'chart', values: […] }`            → 认 `type: '名字'`
+ *
+ * 只认**已知模板名**：拼错的模板名由 `timeline.js` / `shot()` 抛错（带任务名与可用清单），
+ * 这里再报一遍只会让读的人不知道该信哪条。
+ *
+ * ⚠ 它是**静态**的：不加载模块、不建 GL、不起浏览器，所以只能看字面量写法
+ * （`const n = 'wave'; shot(n)` 这种扫不到 —— 代价是"少报一次"，不是"报错"）。
+ *
+ * @param {{ file: string, text: string }[]} files
+ * @param {Iterable<string>} known 已知模板名（`SHOTS` 的键）
+ * @returns {{ shot: string, file: string, line: number }[]}
+ */
+function scanShotUsage(files, known) {
+  const names = new Set(known ?? []);
+  const found = [];
+  for (const f of Array.isArray(files) ? files : []) {
+    const code = blankJsComments(f?.text ?? '');
+    const lines = code.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      // ⚠ 两个分支都要吃掉分隔符：`{ type: '…'` 与行首的 `type: '…'`
+      for (const m of lines[i].matchAll(/(?:\bshot\s*\(\s*|(?:^|[,{[\s])type\s*:\s*)['"]([\w-]+)['"]/g)) {
+        if (!names.has(m[1])) continue;
+        found.push({ shot: m[1], file: String(f?.file ?? ''), line: i + 1 });
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * 纯函数：把「模板声明的 `spec.requires`」+「任务的事实」变成问题清单。
+ *
+ * **两档严重性是刻意分开的**（BACKLOG 1-21 的验收口径就在这一条上）：
+ *
+ *   · `missing-audio` → **error**（进 `errs` ⇒ 退出码 1）。
+ *     依据：`src/app.js:150` 只在 `task.config.mjs` **有 `audio` 字段**时才 `MusicData.load(...)`，
+ *     否则 `Engine` 拿到的是 `SILENT`（`src/core/audio.js:181`）。`wave`/`pulse`/`grid` 读的是
+ *     包络数组与打击事件表 —— 空音乐的包络**恒为 0**、事件表**恒为空**：不抛错、只是画不出东西。
+ *     这不是"提示"，是"这一段不可能对"，所以它该红。
+ *     ⚠ 但**只有真的没配 `audio`** 才红 —— 别让"某个模板声明了 requires"把用它的任务一律染红。
+ *
+ *   · `missing-analysis` → **hint**（进 `skipped`，默认不改退出码）。
+ *     依据：配了 `audio` 只是"还没跑那一步"——`video` 出片前会自动补一次分析
+ *     （`cmdVideo` 里那句 `await analyzeTaskAudio(task)`），浏览器里也有"现算"的退路
+ *     （`src/core/audio.js:69-88`）。所以它属于「没跑 ≠ 通过」，不属于「坏了」。
+ *
+ * 同一件事只报一次（按 `令牌:模板名` 去重）：根因是任务级的，模板出现在 3 段里也只是一件事。
+ *
+ * @param {{ shot: string, file: string, line: number }[]} usage `scanShotUsage()` 的结果
+ * @param {(name: string) => any} specOf 模板名 → `spec`（没有 spec 的给 undefined ⇒ 不参与校验）
+ * @param {{ audioDeclared?: boolean, audioPath?: string|null, audioSource?: string|null,
+ *           analysisFile?: string|null, analysisExpected?: string|null }} facts
+ * @returns {{ level: 'error'|'hint', kind: string, shot: string, where: string,
+ *             message: string, fix: string }[]}
+ */
+function shotDependencyIssues(usage, specOf, facts) {
+  const f = facts ?? {};
+  const out = [];
+  const seen = new Set();
+  for (const u of Array.isArray(usage) ? usage : []) {
+    const spec = typeof specOf === 'function' ? (specOf(u.shot) ?? {}) : {};
+    const req = Array.isArray(spec.requires) ? spec.requires : [];
+    if (!req.length) continue;
+    const where = `${u.file}:${u.line}`;
+
+    if (req.includes('music') && !f.audioDeclared) {
+      if (seen.has(`music:${u.shot}`)) continue;
+      seen.add(`music:${u.shot}`);
+      out.push({
+        level: 'error',
+        kind: 'missing-audio',
+        shot: u.shot,
+        where,
+        message: `模板 "${u.shot}" 读 ctx.music（音频包络 + 真实打击事件），但这支任务**没有配 audio**`
+          + (f.audioSource
+            ? ` —— ${f.audioSource} 这个音频文件在任务目录里，可 task.config.mjs 里没有 audio: 字段，`
+              + '而页面正是按那个字段决定要不要加载音乐的'
+            : '')
+          + '；引擎给场景的是 SILENT（空音乐），这一段的画面只能是黑的',
+        fix: "tasks/<任务>/task.config.mjs 里加一行 audio: './audio/xxx.mp3'，"
+          + '然后 node scripts/anim.mjs analyze <任务>（出片前 CLI 也会自动补一次分析）',
+      });
+      // 根因已经报了：别再报它的派生项（"还没跑 analyze"是同一件事的下游）
+      continue;
+    }
+
+    if (req.includes('analyze') && !f.analysisFile) {
+      if (seen.has(`analyze:${u.shot}`)) continue;
+      seen.add(`analyze:${u.shot}`);
+      out.push({
+        level: 'hint',
+        kind: 'missing-analysis',
+        shot: u.shot,
+        where,
+        message: `模板 "${u.shot}" 读音频包络，但还没有**预计算**的音频分析数据（${f.analysisExpected ?? 'audio/<文件>.analysis.json'}）`
+          + ' —— 引擎会退到在浏览器里现算一份（`src/core/audio.js` 的第 2 条路：能用，但慢，'
+          + '而且和成片用的不是同一份数据）；`video` 出片前 CLI 会自动补上正式的那一份',
+        fix: 'node scripts/anim.mjs analyze <任务>（几秒钟，跑一次就够）',
+      });
+    }
+  }
+  return out;
+}
+
+/** `check` 的 skipped 段里，这一项的 what（同一个 what 会被 formatSkipped 聚合成一行）。 */
+const SHOT_DEP_WHAT = '镜头模板依赖（spec.requires）';
+
+/**
+ * **已经接线**（真的会去查）的依赖令牌。词表（`src/shots/index.js` 的 `SHOT_REQUIRES`）里
+ * 其余的令牌（当前只有 `'under'`）目前**只是声明**：`check` 会把它打出来，并且明说"这一条没验"——
+ * 「空 ≠ 干净」（1-19）在这里的形态就是：**不许把"没查"说成"都满足"**。
+ *
+ * 为什么不把"没接线的令牌"塞进 `skipped`：那是**引擎自己的**未完成项（对每个用 `whip` 的任务
+ * 都一样、任务作者也改不了），塞进去会让 `--strict` 永远红、还会把真正的"这次没跑"淹掉。
+ */
+const SHOT_DEP_GATED = ['music', 'analyze'];
+
+/**
+ * 纯函数：把依赖校验渲染成 `check` 要打印的那些行 + 要进 `errs` 的串 + 要进 `skipped` 的条目。
+ *
+ * 三种结局都要**说话**（"空 ≠ 干净"，`docs/BACKLOG.md` 1-19）：
+ *   · 任务根本没用到模板 → 明说"这一项没有可查的对象"，而不是安静地什么都不打；
+ *   · 用到且都满足      → 打出"谁需要什么、在哪用到、事实是什么"；
+ *   · 有没满足的        → 逐条点名 `文件:行号` + 给下一步命令。
+ *
+ * @param {{ scanned?: number, usage?: any[], issues?: any[], facts?: any, only?: string|null }} o
+ * @returns {{ lines: { sev: 'log'|'warn', text: string }[], errors: string[],
+ *             skipped: { what: string, why: string }[] }}
+ */
+function shotDependencyReport(o = {}) {
+  const scanned = Number(o.scanned ?? 0);
+  const usage = Array.isArray(o.usage) ? o.usage : [];
+  const issues = Array.isArray(o.issues) ? o.issues : [];
+  const facts = o.facts ?? {};
+  const names = [...new Set(usage.map((u) => u.shot))];
+  /** @type {{ sev: 'log'|'warn', text: string }[]} */
+  const lines = [];
+  const errors = [];
+  const skipped = [];
+
+  if (!names.length) {
+    lines.push({
+      sev: 'log',
+      text: `镜头模板依赖：这支任务没有用到 src/shots/ 的模板（静态扫了 ${scanned} 个文件；`
+        + "只认 shot('名字') 与 { type: '名字' } 两种字面量写法）—— 这一项**没有可查的对象**，"
+        + '不是"依赖都对"',
+    });
+    return { lines, errors, skipped };
+  }
+
+  lines.push({
+    sev: 'log',
+    text: `镜头模板依赖：扫了 ${scanned} 个文件，用到 ${names.length} 个模板（${names.join(' / ')}）`,
+  });
+  for (const u of usage) {
+    const req = Array.isArray(u.requires) ? u.requires : [];
+    if (!req.length) continue;
+    lines.push({
+      sev: 'log',
+      text: `  ${String(u.shot).padEnd(8)} 需要 ${req.join(' + ')}    ${u.file}:${u.line}`,
+    });
+  }
+  const free = names.filter((n) => !usage.some((u) => u.shot === n && (u.requires ?? []).length));
+  if (free.length) lines.push({ sev: 'log', text: `  ${free.join(' / ')}：没有声明任何依赖（requires: []）` });
+
+  // 声明了、但这一次**查不了**的令牌：必须说出来（否则"✓ 都满足"就成了假话）
+  const declared = [...new Set(usage.flatMap((u) => (Array.isArray(u.requires) ? u.requires : [])))];
+  const ungated = declared.filter((t) => !SHOT_DEP_GATED.includes(t));
+
+  if (!issues.length) {
+    const have = [];
+    if (facts.audioPath) have.push(`music = ${facts.audioPath}`);
+    if (facts.analysisFile) have.push(`analyze = ${facts.analysisFile}`);
+    lines.push({
+      sev: 'log',
+      text: `  ✓ ${ungated.length ? '能查的那几条依赖' : '声明的依赖'}都满足${have.length ? `（${have.join(' · ')}）` : ''}`,
+    });
+  } else {
+    const nErr = issues.filter((i) => i.level === 'error').length;
+    lines.push({
+      sev: 'warn',
+      text: `⚠ 镜头模板声明的依赖有 ${issues.length} 项没满足`
+        + `（${nErr} 项是**画面不可能是对的**硬问题，${issues.length - nErr} 项是"这一步还没跑"）：`,
+    });
+    for (const it of issues) {
+      const mark = it.level === 'error' ? '✗' : '⚠';
+      lines.push({ sev: 'warn', text: `  ${mark} [${it.where}] ${it.message}` });
+      lines.push({ sev: 'warn', text: `  → ${it.fix}` });
+      if (it.level === 'error') errors.push(`[镜头模板依赖] ${it.shot}（${it.where}）：${it.message}`);
+      else skipped.push({ what: SHOT_DEP_WHAT, why: `${it.shot}（${it.where}）：${it.message}` });
+    }
+  }
+
+  if (ungated.length) {
+    lines.push({
+      sev: 'log',
+      text: `  ⚠ ${ungated.map((t) => `'${t}'`).join(' / ')} 这一条**还没接线**：这次没有验它`
+        + '（交叠是时间线层的声明，静态扫描判不准 —— 假报比不报更贵，见 docs/ENGINE.md §14.9 读法 3）',
+    });
+  }
+  if (o.only) {
+    lines.push({
+      sev: 'log',
+      text: `  （--only ${o.only} 只挑了几段试渲染；这一项是**整个任务**范围的静态扫描）`,
+    });
+  }
+  lines.push({
+    sev: 'log',
+    text: '  （依赖来自模板自己的 spec.requires —— 看某个模板：node scripts/anim.mjs shots <名字> --json；'
+      + '契约：docs/ENGINE.md §14.9）',
+  });
+  return { lines, errors, skipped };
+}
+
+/**
+ * 读任务里可能"取镜头模板"的源码文本（`task.config.mjs` + `scenes/**.js`）。
+ * 只读文件、不加载模块（任务配置是 Vite 模块，CLI 侧 import 不了 —— 与 `resolveAudioTracks()` 同理）。
+ *
+ * @param {string} task
+ * @returns {{ file: string, text: string }[]}
+ */
+function taskShotSources(task) {
+  const out = [];
+  const add = (file) => {
+    try {
+      out.push({ file: path.relative(ROOT, file).replace(/\\/g, '/'), text: readFileSync(file, 'utf8') });
+    } catch { /* 读不到就不算扫过（调用方会打印扫了几个文件） */ }
+  };
+  add(path.join(ROOT, 'tasks', task, 'task.config.mjs'));
+  const walk = (dir) => {
+    let ents = [];
+    try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of [...ents].sort((a, b) => a.name.localeCompare(b.name))) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && e.name.endsWith('.js')) add(p);
+    }
+  };
+  walk(path.join(ROOT, 'tasks', task, 'scenes'));
+  return out;
+}
+
+/**
+ * 收集依赖校验的事实（**这一层做 IO，判据在 `shotDependencyIssues()` 里**）。
+ *
+ * `audioDeclared` 只看 `task.config.mjs` 里**有没有 `audio` 字段**（`src/app.js:150` 的判据），
+ * 而不是 `resolveAudioTracks()` 那条"扫 `audio/` 目录"的兜底 —— 后者只影响 CLI 侧的分析与封装，
+ * **不会**让页面加载音乐。两者的差别正是"任务在 audio/ 里放了 mp3、却忘了写 audio: 字段"
+ * 这种静默失败能被点名的地方。
+ *
+ * @param {string} task
+ */
+function shotDependencyFacts(task) {
+  const dir = path.join(ROOT, 'tasks', task);
+  let cfg = '';
+  try { cfg = readFileSync(path.join(dir, 'task.config.mjs'), 'utf8'); } catch { /* 读不到＝没配 */ }
+  const code = blankJsComments(cfg);
+  const audioDeclared = /(^|\n)[^\S\n]*audio\s*:/.test(code);
+  const lit = /(^|\n)[^\S\n]*audio\s*:\s*(\{[^}]*\}|'[^']*'|"[^"]*")/.exec(code);
+  const declaredValue = lit ? lit[2].replace(/^['"]|['"]$/g, '') : null;
+
+  const tracks = resolveAudioTracks(task);
+  const rel = (p) => (p ? path.relative(ROOT, p).replace(/\\/g, '/') : null);
+  const audioSource = tracks.analysisSource ? rel(tracks.analysisSource) : null;
+  const base = tracks.analysisSource ? tracks.analysisSource.replace(/\.[^.]+$/, '') : null;
+  const analysisExpected = base
+    ? rel(path.join(ROOT, 'tasks', task, 'audio', `${path.basename(base)}.analysis.json`))
+    : null;
+  const analysisFile = analysisExpected && existsSync(path.join(ROOT, analysisExpected))
+    ? analysisExpected
+    : null;
+  // 展示用的 music 路径：页面上真正加载的是 `audio:` 字段指的那个文件
+  const audioPath = audioDeclared && declaredValue
+    ? `tasks/${task}/${declaredValue.replace(/^\.\//, '')}`
+    : audioSource;
+
+  return { audioDeclared, declaredValue, audioSource, analysisExpected, analysisFile, audioPath };
+}
+
 /* ------------------------------------------------------------------ 命令：check */
 
 /**
@@ -1531,6 +1857,44 @@ async function cmdCheck() {
     }
   }
 
+  /**
+   * 1.6) 镜头模板的**依赖前置校验**（BACKLOG 1-21 / `docs/ENGINE.md` §14.9）。
+   *
+   * 为什么放在开浏览器**之前**：`wave` / `pulse` / `grid` 读 `ctx.music`（音频包络 + 真实打击事件），
+   * 忘了配 `audio`（或还没跑 `analyze`）时画面是黑的 —— 而这件事以前只能等逐段试渲染
+   * （起一个私有 Vite + 无头 Chrome、几十秒之后）由亮度统计报一句「几乎全黑，场景可能没画东西」，
+   * **方向完全错**：既不点名是哪个模板，也不提音乐。
+   *
+   * 现在它是**静态**的：任务源码文本（配置档 + `scenes/**.js`）+ 模板自己的 `spec.requires`
+   * + 音频/分析文件在不在 —— 毫秒级，而且**渲染起不来也能报**（受限沙箱里 check 照样有用）。
+   *
+   * 两档严重性（判据在 `shotDependencyIssues()` 的注释里）：
+   *   · 任务根本没配 `audio` ⇒ **errs**（这一段不可能对，退出码 1）；
+   *   · 配了 `audio` 但没跑过 `analyze` ⇒ **skipped**（"这一步还没跑"，默认不改退出码）。
+   * ⚠ `errs` 在 `openSession` 之后才构造（`reportErrors()` 的返回值），所以这里先攒进 `depErrs`，
+   *   下面用 `const errs = [...depErrs, ...reportErrors(info)]` 合起来 —— 退出码语义一个字没动。
+   */
+  const depErrs = [];
+  try {
+    const { SHOTS } = await import('../src/shots/index.js');
+    const files = taskShotSources(task);
+    const usage = scanShotUsage(files, Object.keys(SHOTS ?? {}));
+    const facts = shotDependencyFacts(task);
+    const specOf = (n) => (SHOTS?.[n] ? SHOTS[n].spec : undefined);
+    const issues = shotDependencyIssues(usage, specOf, facts);
+    const rows = usage.map((u) => ({ ...u, requires: specOf(u.shot)?.requires ?? [] }));
+    const dep = shotDependencyReport({
+      scanned: files.length, usage: rows, issues, facts, only: opt('only', null),
+    });
+    for (const l of dep.lines) (l.sev === 'warn' ? warn : log)(l.text);
+    depErrs.push(...dep.errors);
+    for (const s of dep.skipped) pushSkipped(skipped, s.what, s.why);
+  } catch (err) {
+    // 「空 ≠ 干净」：这一项**没跑成**也要说话（不然"没报错"会被读成"依赖都对"）
+    warn(`（镜头模板依赖校验没跑成：${firstLine(err)}）`);
+    pushSkipped(skipped, SHOT_DEP_WHAT, `静态扫描起不来：${firstLine(err)}`);
+  }
+
   // 2) 试渲染每一段的三个采样点（有 GPU 就能立刻抓到 shader 编译错误和 NaN）
   await openSession({ task, only: opt('only', undefined) });
   try {
@@ -1543,7 +1907,7 @@ async function cmdCheck() {
     for (const it of info.timeline) {
       log(`  ${String(it.id).padEnd(16)} ${it.start.toFixed(2).padStart(8)} → ${it.end.toFixed(2).padStart(8)}  (${(it.end - it.start).toFixed(2)}s)${it.note ? '  ' + it.note : ''}`);
     }
-    const errs = reportErrors(info);
+    const errs = [...depErrs, ...reportErrors(info)];
     // 音轨：说清"节拍是从哪条轨测的"（P1-4 —— 从混音里测会被旁白带偏）
     const tracks = resolveAudioTracks(task);
     if (tracks.analysisSource) log(`音频：${tracks.note}`);
@@ -4786,28 +5150,36 @@ const SHOTS_SCHEMA = 'anim.shots/1';
  * 这是 BACKLOG **1-21**（给每个模板补声明式 `spec` + 依赖前置校验）的**输入契约**，
  * 所以字段名在这里一次定死，并按"将来能长出东西"的形状排：
  *
- *   { schema: 'anim.shots/1', count, shots: [
- *       { name, summary, notes, params: [ { name, type, desc, default, required } ] } ] }
+ *   { schema: 'anim.shots/1', count, requireTokens?, shots: [
+ *       { name, summary, notes,
+ *         params: [ { name, type, desc, default, required } ],
+ *         requires?: ['music', …], outputs?: { visual: 'full-frame'|'transition', … } } ] }
  *
- * 两条**读法**（它们和字段名一样是契约，写在文档里）：
+ * 三条**读法**（它们和字段名一样是契约，写在文档里）：
  *   · `required: true` ⟺ 这个参数**没有默认值**（不传时模板拿到 `undefined`）。
  *     JSON 里没有 `undefined`，所以这时 `default` 恒为 `null`、由 `required` 区分。
  *     当前 8 个模板的每个参数都有默认值 ⇒ 全是 `false`（这只说明"省掉它不会出错"，
  *     **不**说明"这个参数没用"——画面照样是模板自带的那一段）。
- *   · **缺字段 ≠ false / 空**：1-21 会往模板对象上加 `requires`（如 `wave` 的
- *     `requires: ['music']`）与 `outputs`。在那之前这两个键**根本不出现** ——
+ *   · **缺字段 ≠ false / 空**：`requires` / `outputs` 是 1-21 补上的**声明式 spec**
+ *     （`src/shots/*.js` 的 `xxxShot.spec`）。没有 spec 的模板，这两个键**根本不出现** ——
  *     读到"没有这个键"要理解成"还没声明过"，绝不能当成"不需要"。
- *     （这一条决定了 1-21 可以**只加字段**、不破坏已有的读者。）
+ *     （1-21 只**加**字段、没改任何已有字段名 ⇒ `schema` 仍是 `anim.shots/1`，
+ *       老的读者不会坏。见 `docs/ENGINE.md` §14.9。）
+ *   · `requireTokens` 是**依赖令牌的词表**（`src/shots/index.js` 的 `SHOT_REQUIRES`）：
+ *     `requires` 里出现的是令牌，不是自由文本 —— 词表随载荷一起发出去，机器读者不必翻源码。
+ *     调用方不传词表时这个键不出现（纯函数不许自己去 import 模块）。
  *
  * 退出码 / 出错：模板名给错时 stdout 上什么都没有、stderr 一行 `✗ …`、退出码 1
  * （机器读者要按这个判，别去解析人读的那张表）。
  *
  * @param {{ name: string, summary?: string, notes?: string,
- *           params?: { name: string, type: string, desc?: string, default?: any }[] }[]} list
+ *           params?: { name: string, type: string, desc?: string, default?: any }[],
+ *           requires?: string[], outputs?: any }[]} list
  *        `listShots()` 的返回值（给了模板名时是只含一个元素的数组）；顺序原样保留
- * @returns {{ schema: string, count: number, shots: any[] }}
+ * @param {Record<string, string>|null} [requireTokens] 依赖令牌词表（`SHOT_REQUIRES`），可省
+ * @returns {{ schema: string, count: number, requireTokens?: any, shots: any[] }}
  */
-function shotsCatalog(list) {
+function shotsCatalog(list, requireTokens = null) {
   const shots = (list ?? []).map((s) => ({
     name: String(s.name),
     summary: s.summary ?? '',
@@ -4822,8 +5194,17 @@ function shotsCatalog(list) {
         required: !hasDefault,
       };
     }),
+    // ⚠ 用"源对象里有这个键才加"而不是"没有就给个空数组/ null"：后者会把
+    //   "还没声明过"伪装成"声明了、不需要任何东西"—— 那正是 §14.9 第 2 条读法要防的静默失真。
+    ...(s && 'requires' in s ? { requires: s.requires ?? [] } : {}),
+    ...(s && 'outputs' in s ? { outputs: s.outputs ?? null } : {}),
   }));
-  return { schema: SHOTS_SCHEMA, count: shots.length, shots };
+  return {
+    schema: SHOTS_SCHEMA,
+    count: shots.length,
+    ...(requireTokens ? { requireTokens: { ...requireTokens } } : {}),
+    shots,
+  };
 }
 
 /**
@@ -4831,7 +5212,7 @@ function shotsCatalog(list) {
  *
  *   node scripts/anim.mjs shots            # 全部模板
  *   node scripts/anim.mjs shots chart      # 某个模板的全部参数与默认值
- *   node scripts/anim.mjs shots --json     # 机器可读的参数表（给 1-21 的 spec / 将来 catalog 用）
+ *   node scripts/anim.mjs shots --json     # 机器可读的参数表 + 声明式 spec（requires / outputs / requireTokens）
  *   node scripts/anim.mjs shots chart --json
  *
  * 为什么要有这条命令：模板名与参数名是这个库的公开 API（写错 `shot()` 会**抛错**，
@@ -4843,12 +5224,12 @@ function shotsCatalog(list) {
  *   的示例是同一份事实，要改就得三处一起说清。
  */
 async function cmdShots() {
-  const { listShots, SHOTS } = await import('../src/shots/index.js');
+  const { listShots, SHOTS, SHOT_REQUIRES } = await import('../src/shots/index.js');
   const all = listShots();
   const want = positional(0);
 
   if (!want) {
-    if (flag('json')) { log(JSON.stringify(shotsCatalog(all), null, 2)); return; }
+    if (flag('json')) { log(JSON.stringify(shotsCatalog(all, SHOT_REQUIRES), null, 2)); return; }
     log(`镜头模板（src/shots/，共 ${all.length} 个）：\n`);
     const w = Math.max(...all.map((s) => s.name.length));
     for (const s of all) log(`  ${s.name.padEnd(w)}   ${String(s.params.length).padStart(2)} 个参数   ${s.summary}`);
@@ -4861,7 +5242,7 @@ async function cmdShots() {
     die(`没有镜头模板 "${want}"。可用的：${Object.keys(SHOTS).join(' / ')}`);
   }
   const s = all.find((x) => x.name === want);
-  if (flag('json')) { log(JSON.stringify(shotsCatalog([s]), null, 2)); return; }
+  if (flag('json')) { log(JSON.stringify(shotsCatalog([s], SHOT_REQUIRES), null, 2)); return; }
   log(`镜头模板 ${s.name} —— ${s.summary}\n`);
   if (s.notes) log(`${s.notes}\n`);
   const shown = (v) => {
@@ -5110,6 +5491,16 @@ export {
   // `anim shots --json` 的载荷（BACKLOG 1-29 前半 / 1-21 的输入契约，纯函数）
   SHOTS_SCHEMA,
   shotsCatalog,
+  // 镜头模板的依赖前置校验（BACKLOG 1-21）：纯函数，可离线断言（不起浏览器、不渲染）
+  blankJsComments,
+  scanShotUsage,
+  shotDependencyIssues,
+  shotDependencyReport,
+  SHOT_DEP_WHAT,
+  // 上面那两个之外的**IO 层**（读任务源码文本 / 收集音频事实）：导出是为了让离线测试能
+  // 拿**真实任务**跑一遍（"用了 wave 的任务在有音乐时必须是干净的"这条断言只能这样验）
+  taskShotSources,
+  shotDependencyFacts,
   // 评论文件（`out/<任务>/NOTES.json`，BACKLOG 1-29 后半）的读写/校验：纯函数，可离线断言
   NOTES_SCHEMA,
   PROTECTED_OUT_FILES,
