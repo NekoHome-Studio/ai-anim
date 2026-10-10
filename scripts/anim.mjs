@@ -4275,14 +4275,71 @@ async function cmdMix() {
 
 /* ------------------------------------------------------------------ 命令：shots */
 
+/** `anim shots --json` 的 schema 版本（字段契约见 `docs/ENGINE.md` §14.9；改字段名就要改它）。 */
+const SHOTS_SCHEMA = 'anim.shots/1';
+
+/**
+ * `anim shots --json` 的载荷（**纯函数**：不碰磁盘、不看时钟 —— 同一份 `src/shots/`
+ * 永远得到同一个字符串，可以直接 diff / 存成基线。可离线断言）。
+ *
+ * 这是 BACKLOG **1-21**（给每个模板补声明式 `spec` + 依赖前置校验）的**输入契约**，
+ * 所以字段名在这里一次定死，并按"将来能长出东西"的形状排：
+ *
+ *   { schema: 'anim.shots/1', count, shots: [
+ *       { name, summary, notes, params: [ { name, type, desc, default, required } ] } ] }
+ *
+ * 两条**读法**（它们和字段名一样是契约，写在文档里）：
+ *   · `required: true` ⟺ 这个参数**没有默认值**（不传时模板拿到 `undefined`）。
+ *     JSON 里没有 `undefined`，所以这时 `default` 恒为 `null`、由 `required` 区分。
+ *     当前 8 个模板的每个参数都有默认值 ⇒ 全是 `false`（这只说明"省掉它不会出错"，
+ *     **不**说明"这个参数没用"——画面照样是模板自带的那一段）。
+ *   · **缺字段 ≠ false / 空**：1-21 会往模板对象上加 `requires`（如 `wave` 的
+ *     `requires: ['music']`）与 `outputs`。在那之前这两个键**根本不出现** ——
+ *     读到"没有这个键"要理解成"还没声明过"，绝不能当成"不需要"。
+ *     （这一条决定了 1-21 可以**只加字段**、不破坏已有的读者。）
+ *
+ * 退出码 / 出错：模板名给错时 stdout 上什么都没有、stderr 一行 `✗ …`、退出码 1
+ * （机器读者要按这个判，别去解析人读的那张表）。
+ *
+ * @param {{ name: string, summary?: string, notes?: string,
+ *           params?: { name: string, type: string, desc?: string, default?: any }[] }[]} list
+ *        `listShots()` 的返回值（给了模板名时是只含一个元素的数组）；顺序原样保留
+ * @returns {{ schema: string, count: number, shots: any[] }}
+ */
+function shotsCatalog(list) {
+  const shots = (list ?? []).map((s) => ({
+    name: String(s.name),
+    summary: s.summary ?? '',
+    notes: s.notes ?? '',
+    params: (s.params ?? []).map((p) => {
+      const hasDefault = p.default !== undefined;
+      return {
+        name: p.name,
+        type: p.type,
+        desc: p.desc ?? '',
+        default: hasDefault ? p.default : null,
+        required: !hasDefault,
+      };
+    }),
+  }));
+  return { schema: SHOTS_SCHEMA, count: shots.length, shots };
+}
+
 /**
  * 镜头库（`src/shots/`）—— 列出可用的镜头模板与它们的参数。
  *
  *   node scripts/anim.mjs shots            # 全部模板
  *   node scripts/anim.mjs shots chart      # 某个模板的全部参数与默认值
+ *   node scripts/anim.mjs shots --json     # 机器可读的参数表（给 1-21 的 spec / 将来 catalog 用）
+ *   node scripts/anim.mjs shots chart --json
  *
  * 为什么要有这条命令：模板名与参数名是这个库的公开 API（写错 `shot()` 会**抛错**，
  * 不静默忽略），而"有哪些模板、参数叫什么"不该靠翻源码才知道。
+ *
+ * `--json` 只**换一种呈现**，不换数据源：两者都来自 `listShots()`，所以"文档里写的默认值"
+ * 与"代码实际用的默认值"不可能对不上（字段契约见 `docs/ENGINE.md` §14.9）。
+ * ⚠ 不加 `--json` 的那份人读输出**一个字都不许变**：它与 §14.2 的参数表、`AGENTS.md` §3.2
+ *   的示例是同一份事实，要改就得三处一起说清。
  */
 async function cmdShots() {
   const { listShots, SHOTS } = await import('../src/shots/index.js');
@@ -4290,6 +4347,7 @@ async function cmdShots() {
   const want = positional(0);
 
   if (!want) {
+    if (flag('json')) { log(JSON.stringify(shotsCatalog(all), null, 2)); return; }
     log(`镜头模板（src/shots/，共 ${all.length} 个）：\n`);
     const w = Math.max(...all.map((s) => s.name.length));
     for (const s of all) log(`  ${s.name.padEnd(w)}   ${String(s.params.length).padStart(2)} 个参数   ${s.summary}`);
@@ -4302,6 +4360,7 @@ async function cmdShots() {
     die(`没有镜头模板 "${want}"。可用的：${Object.keys(SHOTS).join(' / ')}`);
   }
   const s = all.find((x) => x.name === want);
+  if (flag('json')) { log(JSON.stringify(shotsCatalog([s]), null, 2)); return; }
   log(`镜头模板 ${s.name} —— ${s.summary}\n`);
   if (s.notes) log(`${s.notes}\n`);
   const shown = (v) => {
@@ -4546,4 +4605,7 @@ export {
   decideGateFailure,
   gateFailureLines,
   knownCauseHeadline,
+  // `anim shots --json` 的载荷（BACKLOG 1-29 前半 / 1-21 的输入契约，纯函数）
+  SHOTS_SCHEMA,
+  shotsCatalog,
 };

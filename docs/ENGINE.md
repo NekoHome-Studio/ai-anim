@@ -1318,7 +1318,7 @@ result = mean(render(subT) for each subT)
 |---|---|---|
 | `tasks` | 列出任务（名字、标题、场景数、音频） | — |
 | `new <名字>` | 生成任务骨架（`task.config.mjs` + `scenes/title.js` + `scenes/shapes.js` + `audio/`） | 名字只能 `[\w.-]+` |
-| `shots [名字]` | 列出镜头模板（A 档 `src/shots/`）与参数；给名字则打该模板的**全部参数与默认值** | — |
+| `shots [名字]` | 列出镜头模板（A 档 `src/shots/`）与参数；给名字则打该模板的**全部参数与默认值** | `--json`（机器可读的参数表，字段契约见 §14.9） |
 | `check [task]` | 静态扫描禁止写法 + 逐段试渲染中间帧 + **单子帧 vs 多子帧比对**（全黑/过曝/两条路径不一致/段内亮度不均/漏铺背景/NaN·Inf 都会报） | `--only id,id`、`--quick`（只采 50% 一个点、只跑单子帧）、`--sheet` |
 | `verify <task>` | **成片验收**：从 mp4 抽帧，与同一 t 重新渲染的帧按**帧号**逐像素比（拼接错位/帧数不对/色彩空间不一致/成片是旧版本） | `--file x.mp4`、`--from 1`（成片在任务时间轴上的起点）、`--samples 1`、`--tol 18` |
 | `hashes <task>` | 画面指纹：`--save` 存基线、`--baseline` 与基线逐像素比（重构后证明"画面没变"的唯一机械证据） | `--every 2`（每 2 秒一帧；默认取 0/25%/50%/75%）、`--times 1,2.5`、`--only` |
@@ -1573,7 +1573,8 @@ export default shot('chart', {
   唯一来源，所以"文档里写的默认值"与"代码实际用的默认值"不可能对不上。
 - **参数名写错会抛错**，不静默忽略：`shot('chart', { value: [...] })`（少个 `s`）会点名
   「没有参数 "value"」并列出可用参数；未知模板名抛 `未知的镜头模板 "xxx"`。
-- 查询方式：`node scripts/anim.mjs shots`（列全部 8 个）、`node scripts/anim.mjs shots chart`（某个模板的全部参数与默认值）。
+- 查询方式：`node scripts/anim.mjs shots`（列全部 8 个）、`node scripts/anim.mjs shots chart`（某个模板的全部参数与默认值）；
+  **机器可读**的那一份是 `node scripts/anim.mjs shots --json`（字段契约见 §14.9）。
 
 ### 14.2 8 个模板
 
@@ -1679,6 +1680,67 @@ export default {
 - 两种写法**可以混在同一条时间线里**（`cut(shot('chart', {…}), { dur: 5 })` 与 `{ type: 'chart', … }`
   产出的是同一个场景对象）。
 - 教程 `docs/CONFIG-ONLY.md`；离线回归 `node tools/test-timeline-guard.mjs`（纯 JS，不需要 GPU）。
+
+### 14.9 机器可读的参数表：`anim shots --json`（BACKLOG 1-29 前半 → 1-21 的输入契约）
+
+人读的那张表机器不好用（要对齐、要正则、中文列宽）。`--json` 把**同一份数据**
+（都来自 `listShots()`，§14.1）以固定字段名打出来：
+
+```sh
+node scripts/anim.mjs shots --json          # 8 个模板
+node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这个形状，count = 1）
+```
+
+```json
+{
+  "schema": "anim.shots/1",
+  "count": 1,
+  "shots": [
+    {
+      "name": "chart",
+      "summary": "柱状图逐条生长：坐标轴 + 刻度 + 排线柱体 + 扫描线与跟随读数",
+      "notes": "背景是本模板自带的整帧纸面 Pass（key `demo_chart_paper`）…",
+      "params": [
+        { "name": "values", "type": "number[]", "desc": "每根柱子的值（0..1；默认 12 个…）",
+          "default": [0.18, 0.34, 0.27], "required": false }
+      ]
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `schema` | string | `"anim.shots/1"`（`SHOTS_SCHEMA`）。**字段名或含义变了就要改这个串** |
+| `count` | number | 本次输出的模板数（给了模板名就是 1） |
+| `shots[]` | array | 一个模板一个对象，**顺序 = `SHOTS` 的登记顺序**（与 §14.2 那张表一致） |
+| `shots[].name` | string | 模板名 = `shot('名字')` / `{ type: '名字' }` 里的那个名字 |
+| `shots[].summary` | string | 一句话摘要（人读表格里的那一列） |
+| `shots[].notes` | string | 长注释。**目前"需要音乐"这类依赖只写在这里（散文）**：`wave`/`pulse`/`grid` 见 §14.3 |
+| `shots[].params[]` | array | 参数表，顺序 = 模板自己 `meta.params` 的顺序（不是默认值的键序） |
+| `params[].name` / `.type` / `.desc` | string | 参数名 / 类型（`string` `number` `number[]` `boolean` …）/ 说明 |
+| `params[].default` | any \| null | 默认值（=「什么都不传时的画面」，取自工厂函数的 `.defaults`） |
+| `params[].required` | boolean | **没有默认值**（不传时模板拿到 `undefined`）。此时 `default` 恒为 `null` —— JSON 里没有 `undefined`，由 `required` 区分 |
+
+两条**读法**（与字段名一样是契约的一部分）：
+
+1. **`required: true` ⟺ 缺默认值**，不代表"画面离不开它"。当前 8 个模板的每一个参数都有默认值 ⇒
+   全是 `false`：省掉任何参数都不会报错，画面就是模板自带的那一段。
+2. **缺字段 ≠ `false` / 空**：`requires`（如 `['music']`）与 `outputs` 是**留给 1-21 的位置** ——
+   给模板补声明式 `spec` 时才会出现。在那之前读到"没有这个键"，要理解成**"还没声明过"**，
+   不能当成"不需要"。反过来，1-21 落地时**只加字段、不改已有字段名** ⇒ 老的读者不会坏。
+   （`required` 已经按同一条规矩设计：模板哪天去掉某个参数的默认值，它自动变成 `true`，
+   `--json` 与这一节都不用改。）
+
+- **确定性**：载荷只来自 `listShots()`，不含时间戳 / 随机 / 环境信息 ⇒ 同一份 `src/shots/`
+  永远得到同一个字符串，可以直接 `diff`、可以当基线存。
+- **这份输出不许悄悄变**：1-21（`check` 用它把「`wave` 需要 `audio` + 先跑 `analyze`」提前报出来）
+  与将来的 catalog 都吃它；要改就先动 `SHOTS_SCHEMA`，并**同步这一节**。
+- **不带 `--json` 的人读输出一个字都不变**（两条路同一份数据，只是呈现不同）。
+- 机器读者按**退出码**判成败：模板名给错时 **stdout 是空的**、stderr 一行
+  `✗ 没有镜头模板 "…"。可用的：…`、退出码 1 —— 别去解析人读的那张表。
+- 实现：`scripts/anim.mjs` 的 `shotsCatalog()`（**纯函数**）。离线断言直接
+  `await import('./scripts/anim.mjs')` 拿它 —— 本文件有 `IS_MAIN` 入口门，import 不会执行任何命令。
 
 ---
 
