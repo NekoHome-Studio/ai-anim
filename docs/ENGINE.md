@@ -1338,6 +1338,7 @@ result = mean(render(subT) for each subT)
 | `say <task>` | **口播**：读 `narration.mjs` → 逐句 TTS → 量真实时长 → 反推每段 `stretch`/`slot` → 写 `timing.{json,mjs}` + `narration.json` + `<任务>-vo.mp3`（不渲染画面） | `--voice`、`--rate`、`--script 文件`、`--bpm N`、`--tail 1.2`、`--max-stretch 1.9`、`--tts "<命令>"`、`--dry-run`（不写文件，但仍会合成/复用音频量时长）、`--force`、`--no-vo` |
 | `mix <task>` | 旁白摆到绝对时刻 + 用旁白包络给音乐**闪避** → `audio/<任务>-mix.mp3`（引擎只认一条音轨） | `--music x.mp3`（不给就从 `task.audio` 取）、`--out`、`--vo-only`、`--bitrate 192k` |
 | `clean <task>` | 清中间产物（默认**不动**成片与 stills） | `--all`、`--dry-run` |
+| `note <task> "文字" --at 12.5` | **评论文件** `out/<任务>/NOTES.json`：追加 / 列出 / 标记已解决（"第 12.5 秒这里字幕太小"的落点；`at` 是秒）。⚠ `clean` **绝不**删它 | `--at 12.5`、`--list [--json]`、`--resolve n1`、`--text "…"`；形状与纪律见 §12.7 |
 | `dumppx <task>` | 导出浏览器那一帧的**裸像素**（对照实验用） | `--times 1.5`、`--out x.raw` |
 | `dumpframe <task>` / `dumpframes <task>` | 落一张/一串裸帧 + 引擎内部量 | `-t 0.5 --run-up`、`--from 0 --to 1` |
 | `help` | 打印用法 | — |
@@ -1458,6 +1459,45 @@ tasks/<任务>/
 | `timeline` | — | 数组（里面可以直接写配置档节点 `{ type: '…' }`，见 §9.7），或 `seq()/par()` 方案（自动 `build`） |
 
 任务发现用 `import.meta.glob('/tasks/*/task.config.mjs')`（**注意 glob 必须以 `/` 开头**，相对路径匹配不到）。新建任务目录后 **dev 服务要重启**才能看到；CLI 不受影响。
+
+### 12.7 `out/<任务>/NOTES.json`：评论文件（`anim note`，BACKLOG 1-29）
+
+「第 12.5 秒这里字幕太小」这类反馈**不该**逼你去跑一次渲染、也不该只活在对话记录里。
+`anim note` 把它写成一个**普通项目文件**（外部参考项目的 Studio 对 `FEEDBACK.json` 就是这么做的：
+读写走文件、不轮询、不重编译 —— `docs/REFERENCE-hypit.md` §5.5）：
+
+```sh
+node scripts/anim.mjs note demo "第 12.5 秒这里字幕太小" --at 12.5    # 追加（--at 是秒，可省 → null）
+node scripts/anim.mjs note demo --list [--json]                       # 列出（○ 未解决 / ✓ 已解决）
+node scripts/anim.mjs note demo --resolve n1                          # 把某条标记成已解决
+```
+
+```json
+{ "schema": "anim.notes/1", "task": "demo",
+  "notes": [ { "id": "n1", "at": 12.5, "text": "第 12.5 秒这里字幕太小",
+               "createdAt": "2026-10-10T14:04:48.606Z", "resolved": false, "resolvedAt": null } ] }
+```
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 文件内唯一（`n1` `n2` …，追加时单调往上）。`--resolve` 用的就是它 |
+| `at` | **秒**（可为小数）；`null` = 这条不针对某一时刻（写 `--at` 才不是 null） |
+| `text` | 正文（非空：空正文条目会让整份文件读不动 —— 宁可停下来让人补，也不静默丢一条） |
+| `createdAt` / `resolvedAt` | ISO 8601（UTC，`Z`）；显示时按本机时区 |
+| `resolved` | 布尔。`--resolve` 置 true 并写 `resolvedAt`；**重复 resolve 不改 `resolvedAt`**（幂等，不 churn 文件） |
+
+四条纪律：
+
+1. **空 ≠ 干净**：文件空 / 半截 JSON / 形状不对 / 某条没正文，一律抛**可读的**错（报到行列 + 怎么修），
+   **绝不**当成"还没有评论" —— 那是静默丢反馈（与 `check` 的 `skipped` 同一条纪律，BACKLOG 1-19）。
+2. **不覆盖坏文件**：读不动就停下，不拿新内容去盖它（这个文件是反馈的唯一落点）。
+3. **`anim clean` 绝不删它**（判据只有 `PROTECTED_OUT_FILES` 一处；clean 的输出里会明说"评论保留"）。
+   ⚠ 但 `out/` 在 `.gitignore` 里 —— 评论**不进版本控制**，要长期留存得自己拷走。
+4. **写盘只走 `fs.writeFileSync(…, 'utf8')`**（有中文），读只走 `parseNotesJson()`。
+   读写都是**纯函数**（`scripts/anim.mjs` 前部那一片，末尾 export）：`await import('./scripts/anim.mjs')`
+   就能离线断言（`IS_MAIN` 入口门保证 import 不会执行任何命令）。
+   ⚠ BACKLOG 原文里的 `run`（"这条评论是对哪一次渲染说的"）**这一版没有实现** —— 渲染产物还没有 run id；
+   它作为**未知字段原样保留**（信封与条目都是），所以将来加它不会抹掉已经手写进去的值。
 
 ---
 
