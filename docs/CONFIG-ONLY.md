@@ -130,11 +130,12 @@ node scripts/anim.mjs video 我的片子            # 出成片 → out/我的�
 ### 3.1 三个"用法都在、以前没人用过"的字段：`post` / `world` / `maxSamples`
 
 这三个字段的转发是通的，但很长一段时间里 `tasks/` 下**一个真实用例都没有**，所以没人踩过它们的坑。
-可跑的完整例子：**`tasks/_config-lab/task.config.mjs`**（只有这一个文件，5 段、30.5 秒）：
+可跑的完整例子：**`tasks/_config-lab/task.config.mjs`**（只有这一个文件，5 段、30.70 秒）：
 
 ```sh
 node scripts/anim.mjs check  _config-lab
-node scripts/anim.mjs still  _config-lab -t 2,8,13,17,21,26.5,27.5
+node scripts/anim.mjs still  _config-lab -t 2,10,15,19.23,23,28.5,29.5
+node scripts/anim.mjs audit  _config-lab          # 背景守门的原始数据（每个交叠段画了几次）
 node tools/scene-harness.mjs _config-lab          # 离线跑场，不需要 GPU / 浏览器
 ```
 
@@ -153,26 +154,29 @@ node tools/scene-harness.mjs _config-lab          # 离线跑场，不需要 GPU
 只有它是 `tonemap: 'agx'` + `exposure: 0.75`。
 
 **② `world` —— 共享背景。用法**：`world: 'auto'`（= `worldPass: true`）声明"底由引擎铺"；
-`world: false` 声明"**我刻意不铺底**"。
+`world: false` 声明"**这一段的整帧底由我自己负责**"。
 
 ```js
-{ type: 'chart', dur: 12.5, world: 'auto' },   // 声明引擎铺底（本任务是纯配置档 → 解析成 null，底由模板自带）
-{ type: 'whip',  dur: 2.5, overlap: 0.5, world: false },   // 刻意不铺底：整帧画面就是上一段的成帧（ctx.under）
+{ type: 'chart', dur: 15.5, world: 'auto' },   // 声明引擎铺底（本任务是纯配置档 → 解析成 null，底由模板自带）
+{ type: 'whip',  dur: 1.5, overlap: 0.5, world: false },   // 整帧底 = 上一段的成帧（ctx.under）甩上来
 ```
 
 ⚠ **坑：`world: false` 是合法声明，不是"骗过 `check`"的开关。** 它的语义是
-"**这一段的整帧底由我自己负责，引擎别再加一层**"，背景守门（`worldAudit`）会跳过声明了它的段。
-所以别为了让它绿去画一笔没意义的全屏 Pass —— 那是把这个字段用成了谎话。
-两条容易误解的地方，都实测过（`anim audit _config-lab`）：
+"**这一段的整帧底由我自己负责，引擎别再加一层**"，背景守门（`worldAudit`）会跳过声明了它的段
+（`src/app.js:864` 的 `if (it.world === false) continue`）。所以别为了让它绿去画一笔没意义的
+全屏 Pass —— 那是把这个字段用成了谎话。三条实测出来的、容易误解的事
+（`node scripts/anim.mjs audit _config-lab` 就是复现命令）：
 
-- **守门只查"与前一段交叠"的段，而且每个这样的段只取一个时刻**（交叠窗的中点：
-  `it.start + span/2`，`src/app.js` 的 `worldAudit`）。所以 `world: false` 的可观测差异
-  要靠交叠才看得见；而被跳过的段**根本不在 `anim audit` 那张表里**。
-- **跳过不等于"这段没被看"**：`_config-lab` 的甩镜段（`world: false`）实际**照样被审了**——
-  它的交叠窗（0.5 秒）整个落在上一段里面，守门在中点取到的 `full` 是 1，于是它既在表里、也过关。
-  真正需要这条声明的是"拿不到上一帧"的那种布局（例如上一段已经结束，这一段只能黑底 + 速度线）。
-  ⚠ 顺带一个**盲区**：交叠窗之后的余下时间**没有任何守卫看着**（`_config-lab` 里是 16.5–18.5 那 2 秒），
-  那一段如果没拿到上一帧的成帧，画面会是黑的而不报错。
+- **守门只查"与前一段交叠"的段，而且每个这样的段只取一个时刻**（交叠窗的中点
+  `it.start + max(0.02, span/2)`，`src/app.js:866`）。`_config-lab` 5 段里实际有 **3 处交叠**
+  （图表→甩镜、甩镜→动态大字、动态大字→片尾），但守门只列 **2 段**：甩镜被 `world: false`
+  跳过、图表是硬切进来的。
+- **`world: false` 在守门的数据里根本不显示为 `false`** —— 它被 `continue` 掉，连一行都没有；
+  没写 `world` 的段才显示 `world=none`（`src/app.js:867`）。所以"表里没有它"就是它生效的样子。
+- **守门不是"整段都看着"**：交叠窗之外的部分没有任何守卫。`_config-lab` 里甩镜
+  `19.50–20.50` 那 1 秒就是这样一个没人看着的区间（那时画面已经被 `whip` 自己压到 15% 了）。
+  那是模板自身的行为（`tasks/demo` 的 whip 尾巴实测同样是 0.051），
+  但**如果**那 1 秒真的漏了底，守门也抓不到。
 - 在**纯配置档**里 `world: 'auto'` 等于没写：`export const world` 是手写场景那一路的东西
   （`AGENTS.md` §3 的 `worldPass()`），没有它时 `resolveWorld()` 老老实实返回 `null` ——
   8 个模板本来就各自铺满整帧，写它只是把意图写清楚。想让它真的生效，三条路：
@@ -180,6 +184,27 @@ node tools/scene-harness.mjs _config-lab          # 离线跑场，不需要 GPU
   ② 写手写场景并用 `cut(scene, { world: 'auto' })`；
   ③ 节点上直接给一个 world Pass 对象（`world: myPass`）—— 这是**这一段专用**的背景，
   和手写场景那条路吃的是同一段引擎代码。
+
+> **`whip` 要放多长？**（这条不是 `world` 的坑，但同一个夹具里撞上了）它只在**交叠窗**里有
+> 上一帧可甩（`ctx.under` 只在 `t < 上一段.end` 时才有值）；而且它自己就会把画面压暗 ——
+> shader 里 `col *= mix(1.0, 0.15, k)`，`k → 1` 时只剩 15%，交叠窗之外的速度线/径向模糊/震屏
+> 也随 `energy = sin(min(1, k)·π)` 一起归零。实测（`_config-lab`，`check` 的亮度读数）：
+> 交叠窗中点 **0.945**（图表正被甩成横向拉丝）→ 窗后 0.051 → 段尾 0.056；
+> `tasks/demo` 的 whip 尾巴同样是 0.051。
+> 也就是说 **`dur ≈ 3 × overlap`（约 1.5 秒）时它正好压到黑，再长就是一条没人看的黑尾**，
+> 而且**不报错**（0.04–0.05 够不上"全黑"阈值）。同时让上一段铺满这 1.5 秒，
+> 暗下去才是"甩走"而不是"没画"。
+
+> **一个已知的"报告不一致"**（只影响 `check` 的文字，不影响画面，可放心忽略）：
+> `check` 的背景守门那行会数"其中 N 段声明了转场/共享背景"，但它读的是**段**上的
+> `handlesTransition`（`src/app.js:881/884`），而引擎读的是**场景**上的那一份
+> （`src/core/engine.js:563`）。配置档这条路里 `configToCut()` 把节点上的值原样带过去
+> （`src/timeline.js:92`），节点上没写时是 `undefined` ⇒ 模板自带的 `true`
+> （`src/shots/whip.js:34`）到不了段对象，那一行就会把它数成"没声明"。
+> **画面是对的**：引擎走场景那一份，所以不会对 `whip` 再叠一次交叉溶解
+> （`_config-lab` 的 `19.23` 那一帧实测就是"图表被甩成横向拉丝 + 一道 signal 主轴"，没有两屏叠影）。
+> 想让那个数字也准，写场景的路子可以在节点上显式写 `handlesTransition: true`
+> （配置档节点也接受这个键）；引擎侧的修法是让守门回退读 `it._scene?.handlesTransition`。
 
 **③ `maxSamples` —— 自适应子帧数的上限。用法**：给"最贵的那一段"封个顶。
 
@@ -435,7 +460,9 @@ node tools/test-shots.mjs      # 镜头库的登记 + 文档一致性 + 报错�
 | 段名出现 `title_2` `title_3` | 同一种模板在一支片子里用了几次，不写 `id` 时都用模板默认段名 | 需要区分就给每段显式写 `id`；`check` 的时间线表里看得到最终段名 |
 | 时间线里写的 `post` 好像没生效 | 模板 `render()` 里 `return` 的 post 会**盖过**同名的键（合并顺序是 `{…默认, …item.post, …场景 return}`，`src/core/engine.js`） | 只写模板没设的键；或在 `still` 出图前后各来一张对比：`node scripts/anim.mjs still <任务> -t <时刻>`。可跑的例子见 §3.1 与 `tasks/_config-lab/` |
 | 写了 `maxSamples: 64`，画面反而更粗 | 它不是"加密采样"，是自适应子帧数的**上限**，且只取 `8 / 24 / 72 / 216` 这几档 —— 64 被夹到 24 | 想让拖影更细：调**小** `--tol`（默认 2.5）；想让某段变快：这才写 8 / 24。见 §3.1 |
-| 背景守门把某一段"漏掉"了 | 那一段写了 `world: false`（= "我刻意不铺底"，守门按设计跳过它）；或它**没有与前一段交叠**（守门只查交叠段） | `node scripts/anim.mjs audit <任务>` 看每个交叠段实际画了什么；被跳过的段不在那张表里，属正常 |
+| 背景守门把某一段"漏掉"了 | 那一段写了 `world: false`（= "整帧底我自己负责"，守门按设计跳过它，`src/app.js:864`）；或它**没有与前一段交叠**（守门只查交叠段，源码见 §3.1） | `node scripts/anim.mjs audit <任务>` 看每个交叠段实际画了什么。⚠ 被跳过的段**连一行都没有**（显示 `world=none` 的才是"没声明 world"），所以"表里少一段"通常就是它在生效 |
+| `check` 说"其中 0 段声明了转场/共享背景"，可我明明用了 `whip` | 守门读的是**段**上的 `handlesTransition`，而配置档节点上没写时它是 `undefined`（模板自带的那份在**场景**上，引擎读的是场景） | 只影响那行文字，画面是对的（§3.1 末尾有证据）；想让数字准就在节点上显式写 `handlesTransition: true` |
+| 甩镜段的尾巴是一片近黑 | `whip` 会把画面一路压暗（`col *= mix(1.0, 0.15, k)`）：`dur ≈ 3 × overlap`（约 1.5 秒）时它正好压到黑，再长就是黑尾；窗外速度线/模糊/震屏也都归零 | 段长贴着"甩完"（`_config-lab` 是 `dur: 1.5 / overlap: 0.5`），并让上一段铺满它的全长。亮度 0.05 不会触发"全黑"告警，只能靠看图/`check` 的读数 |
 | 改了配置但预览没变 | `npm run dev` 的预览服务看不到**新建的**任务目录 | 重启预览服务；CLI 渲染不受影响 |
 | 出片/出图期间改了配置 | `task.config.mjs` **在** Vite 的模块图里，改它会触发重载、打断渲染 | **渲染期间一个文件都别写**（`docs/*.md` 也不行 —— 编辑器的原子写会留下**不以 `.md` 结尾**的 `.tmpdir/…tmp`，`vite.config.mjs` 的 `watch.ignored` 挡不住，撞 `EBUSY` 会让 Vite 进程直接崩、渲染报 `ERR_CONNECTION_REFUSED`）。唯一被实测挡住的是 **`out/**`**：并发产出先落 `out/_staging/`（`AGENTS.md` §7 / `docs/STATUS.md` §14.5） |
 
