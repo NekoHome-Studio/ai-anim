@@ -1992,7 +1992,10 @@ async function cmdDiff() {
  * ⚠ 判定方式不是"哈希相等"，而是**差了多少**：同一时刻是 t 的纯函数，
  *   但 GPU 在少数 tile 上有最后一位（1/255）的噪声（交叠到 95% 的转场帧尤其敏感），
  *   跨进程重渲可能差 1 个 LSB。所以基线连原始像素一起存，比对时报 max / mean。
- *   判据：max ≤ 2 且 >8 的像素为 0 ⇒ 逐像素没变。
+ *   判据**只有一处**：`negligible()` —— **差过 16/255 的像素一个都不许有**（`over16 === 0`）
+ *   且 `mean < 0.002` ⇒ 逐像素没变。16 在 8bit 显示空间里已经能看出台阶，而实测噪声天花板是 10
+ *   （反复重渲同一份基线稳定得到 max 8–10），中间留了一档余量。
+ *   ⚠ 别照抄别处的说法（日志里打的是 `>16` / `>32` 两列，`max` 只是给人看的读数，**不参与判定**）。
  */
 async function cmdHashes() {
   const task = pickTask();
@@ -2020,7 +2023,8 @@ async function cmdHashes() {
           ([tt, b64]) => /** @type {any} */ (window).__anim.diffToB64(b64, tt, { samples: 1 }),
           [f.t, cur.toString('base64')],
         );
-        // 判据见函数头：max ≤ 8（1 LSB 级的 GPU 噪声）且没有任何像素差过 8、没有成片差异
+        // 判据**以 negligible() 为准**（函数头那段）：over16 === 0 且 mean < 0.002。
+        // 日志里的 max / >16 / >32 是给人看的读数，哪一个都不单独构成判据。
         const same = negligible(r);
         if (!same) bad++;
         log(`  t=${f.t.toFixed(3)}  ${same ? '✓ 画面一致' : '✗ 变了'}  max ${r.max}  mean ${r.mean.toFixed(4)}  >16 ${(r.over16 * 100).toFixed(4)}%  >32 ${(r.over32 * 100).toFixed(4)}%`);
