@@ -32,7 +32,12 @@
  *                                                        --music 不给就从 task.audio 里取
  *
  * 【验收与诊断】——改完先跑这几条，比人眼看图可靠
- *   node scripts/anim.mjs check <task> [--sheet] [--quick]  三点采样 + 多子帧比对 + 背景守门 + 场景异常
+ *   node scripts/anim.mjs check <task> [--sheet] [--quick] [--strict]
+ *                                                       三点采样 + 多子帧比对 + 背景守门 + 场景异常；
+ *                                                       任何**没跑成 / 被跳过**的审计都会列进输出末尾的
+ *                                                       `skipped:` 段（"空 ≠ 干净"，见 BACKLOG 1-19）。
+ *                                                       ⚠ skipped **默认不影响退出码**（回归清单依赖它）；
+ *                                                       --strict 才把"有跳过"也算成失败（退出码 1）
  *   node scripts/anim.mjs verify <task> [--file x.mp4 --from 1 --samples 2 --tol 18]
  *                                                        成片抽帧 vs 同 t 重渲，按**帧号**逐像素比
  *                                                        （--from 是成片在任务时间轴上的起点）
@@ -141,6 +146,263 @@ function cleanupChildren() {
 process.on('exit', cleanupChildren);
 process.on('SIGINT', () => { cleanupChildren(); process.exit(130); });
 process.on('SIGTERM', () => { cleanupChildren(); process.exit(143); });
+
+/**
+ * 这个文件是不是**直接被 node 跑**的？（而不是被 import 进来做单测）
+ *
+ * 为什么需要它：下面那些纯函数（`formatSkipped` / `decideGateFailure`）必须能**离线单测**
+ * （不需要 GPU、不需要浏览器），而本模块末尾带着顶层 await 的 CLI 派发 —— 一旦被 import
+ * 就会当场执行一条命令。有了这道门，import 本文件只拿到函数，不会跑任何东西。
+ *
+ * Windows 上 `process.argv[1]` 是 `D:\…\anim.mjs` 这种反斜杠路径，必须过 `pathToFileURL`
+ * 再比，否则永远不相等（CLI 会静默什么都不做 —— 这是最难查的一种坏法）。
+ */
+const IS_MAIN = (() => {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try { return pathToFileURL(entry).href === import.meta.url; } catch { return false; }
+})();
+
+/* ------------------------------ 空 ≠ 干净（BACKLOG 1-19）与守门措辞（1-3）：纯函数 */
+
+/**
+ * 「空 ≠ 干净」的收集器（`docs/BACKLOG.md` 1-19）。
+ *
+ * 三个外部参考项目独立指向同一个失败模式：**浏览器没跑起来时那几个 section 是空的**，
+ * 而空输出「读起来像一份干净的报告，其实什么都没跑」（对方原话：*empty, not clean —
+ * which reads like a clean file but means nothing ran*）。
+ *
+ * 这条在本 CLI 里有四个真实落点，以前每一个都只是**少打一行**（背景守门 catch、
+ * `lint-narration-dup` 没跑成、多子帧路径失败、非有限值扫不出来）：
+ * 读输出的 agent 看到的是「这次 check 没报错」＝ 通过。现在它们一律进这个列表。
+ *
+ * ⚠ **`skipped` 不许改变退出码**：`tools/regress-all.mjs` 里有 10 个 `check:*` 项依赖
+ *   `check` 的退出码语义（"零退出 = 这次体检没发现问题"）。想把它当门用只能显式加
+ *   `--strict`（默认关）。
+ *
+ * @typedef {{ what: string, why: string }} SkippedAudit
+ * @param {SkippedAudit[]} list
+ * @param {string} what 是什么没跑（一句话，读的人据此判断"这块地方没验过"）
+ * @param {unknown} why 为什么没跑（原始原因：异常 / 退出码 / 页面能力缺失）
+ * @returns {SkippedAudit[]} 同一个数组（便于 `skipped = pushSkipped(skipped, …)` 一行写）
+ */
+function pushSkipped(list, what, why) {
+  list.push({ what: String(what), why: firstLine(why) });
+  return list;
+}
+
+/** 取一句话（多行异常的堆栈不带进报告里）。 */
+function firstLine(x) {
+  const s = String(x == null ? '' : (x.message ? x.message : x));
+  const line = s.split(/\r?\n/).find((l) => l.trim()) ?? '';
+  return line.trim() || '(没有说明)';
+}
+
+/**
+ * 把 `skipped` 列表渲染成输出里的那一段（纯函数，可离线单测）。
+ *
+ * 三条刻意的设计：
+ *   ① 标题就是 `skipped:` —— 与外部三份参考报告的用词对齐，读的人一眼知道这是"没跑"；
+ *   ② 每一条既有 **what**（是什么没跑）也有 **why**（为什么），缺一个就又会退化成"少打一行"；
+ *   ③ 这一段**永远出现**（哪怕是 `skipped: 无`）—— 否则"确实全跑了"与"这段整个没执行"
+ *      在输出里长得一样，那正是 1-19 要消灭的东西。
+ *
+ * @param {SkippedAudit[]} skipped
+ * @returns {string[]} 要打印的行（不带缩进；调用方决定 warn 还是 log）
+ */
+function formatSkipped(skipped) {
+  const list = Array.isArray(skipped) ? skipped : [];
+  if (!list.length) return ['skipped: 无（这次体检的每一项审计都真的跑了）'];
+  const lines = [`skipped: ${list.length} 项没跑 —— 这些地方**没有验过**，不要当成通过：`];
+  for (const s of list) lines.push(`  · ${s.what}：${s.why}`);
+  lines.push('  （想让"有跳过"变成非零退出：加 --strict —— 默认不改退出码，见 docs/BACKLOG.md 1-19）');
+  return lines;
+}
+
+/**
+ * 结论行（纯函数，可离线单测）：**必须把"跳过了 N 项"写进去**。
+ *
+ * 1-19 的判据就是这个：结论行里只要没有 skipped 的身影，"N 项没跑"和"全跑过了"
+ * 在收尾处就长得一模一样。
+ *
+ * @param {{ problems?: number, skipped?: number, quick?: boolean }} o
+ */
+function checkVerdictLine(o = {}) {
+  const problems = Number(o.problems ?? 0);
+  const skipped = Number(o.skipped ?? 0);
+  const tail = skipped
+    ? `（另有 ${skipped} 项**没跑**，见上面的 skipped）`
+    : '（skipped: 无）';
+  if (problems) return `✗ 有 ${problems} 个问题${tail}`;
+  return `✓ 没有发现问题${tail}`;
+}
+
+/**
+ * 产物守门失败 → 「这是哪一类失败 + 下一步该做什么」（纯函数，可离线单测）。
+ *
+ * `docs/BACKLOG.md` 1-3：以前守门失败一律补一句"重跑即可"。但**拼接 / 封装那一步是确定性的**
+ * —— 同一份输入、同一条命令，跑一千次还是同样的帧数差，重跑只是白等（上一轮就照着重跑了
+ * 一次，白等 30 秒，帧数一模一样）。反过来，分块渲染那一步**确实**能靠重跑恢复（已渲好的块
+ * 会跳过），所以也不能一刀切删掉"重跑"。正确的做法是按「已知原因（确定性、重跑无意义） /
+ * 未知原因（可能是瞬时、重跑有意义）」分开说，并且各自给出**下一步做什么**。
+ *
+ * 判据只吃**已经算好的事实**（`problems` 就是 `checkVideoFile()` 返回的那个字符串数组），
+ * 所以这里不会与 ffprobe 的调用时机耦合。
+ *
+ * @param {{
+ *   problems: string[],        // checkVideoFile() 的问题列表（原样，别改写）
+ *   expected?: number|null,    // 期望帧数
+ *   got?: number|null,         // 渲染侧/ffprobe 给的帧数（拿不到就不传）
+ *   phase: string,             // 'chunk' | 'stitch' | 'final' | 'parallel' | 'render'
+ *   step?: string,             // 人话的"哪一步"（默认按 phase 取）
+ *   chunk?: { i: number, n: number, range?: string },  // 分块路径才有
+ *   reusable?: boolean,        // 分块路径：已渲好的块会被复用（= 重跑真的能只补没渲完的块）
+ *   retryable?: boolean,       // 调用方**已判定**能靠重跑恢复（例如纯渲染帧数不足）
+ * }} o
+ * @returns {{ kind: 'input'|'transient'|'encode'|'stitch'|'scene'|'unknown',
+ *             known: boolean, retryWorthwhile: boolean,
+ *             headline: string, next: string[], retryLine: string }}
+ */
+function decideGateFailure(o) {
+  const problems = (o?.problems ?? []).map((s) => String(s));
+  const phase = String(o?.phase ?? 'final');
+  const text = problems.join('\n');
+
+  /** 已知的确定性根因是否命中？（命中则与"可能是瞬时的"互斥） */
+  const empty = /0 字节/.test(text);
+  const noFrames = /读不到帧数|没有可解码的画面/.test(text);
+  const fpsBad = /帧率 .* ≠ 期望/.test(text);
+  const noMoov = /moov atom not found|没 finalize/.test(text);
+  const unreadable = /打不开|读不出/.test(text);
+  // ⚠ "ffprobe 退出码 N" 单独拿出来判：它既可能是文件坏了（确定性），
+  //   也可能是 ffprobe 不在 PATH / 起不来（环境问题，属于**瞬时**那一类，
+  //   说成"已知原因"就会把人指偏）。只有环境那类才走 unknown。
+  const probeEnv = /ENOENT|不是内部或外部命令|command not found|not recognized/i.test(text);
+  const probeExit = /退出码/.test(text) && !probeEnv;
+  const frameDiff = /数出 (\d+) 帧，期望 (\d+) 帧/.exec(text);
+  const expected = o?.expected ?? (frameDiff ? Number(frameDiff[2]) : null);
+  const got = o?.got ?? (frameDiff ? Number(frameDiff[1]) : null);
+  const diff = frameDiff ? Number(frameDiff[1]) - Number(frameDiff[2]) : null;
+
+  /**
+   * 分块路径**默认**是"重跑有意义"的（已渲好的块会跳过，重跑只补这一块）；
+   * 其余调用方必须自己声明 `retryable` —— 默认 false，因为守门失败的第一嫌疑
+   * 永远是**确定性的**（同样的输入 ⇒ 同样的结果），说成"重跑就好"会把人指偏。
+   */
+  const chunkRetry = phase === 'chunk' && o?.reusable !== false;
+  const retryable = o?.retryable === true || chunkRetry;
+
+  let kind = 'unknown';
+  if (empty || noFrames || noMoov || unreadable || probeExit) {
+    // 「文件根本读不出来」这一类：ffmpeg 没把文件写完（半截流 / 没写 moov），
+    // 或者根本读不到流。它**不是**"渲染少渲了几帧"。
+    kind = 'encode';
+  } else if (fpsBad) {
+    // 帧数对、帧率/时间戳不对 = 拼接时的 `-copyts` 那类问题，与容器记账有关
+    kind = 'stitch';
+  } else if (frameDiff) {
+    if (phase === 'chunk' && (o?.reusable !== false)) kind = 'scene';
+    else if (phase === 'stitch' || phase === 'final' || phase === 'parallel') kind = 'stitch';
+    else if (Math.abs(diff) >= 1 && Math.abs(diff) <= 60) kind = 'stitch';   // 差几帧 ⇒ 音轨记账切尾
+    else kind = 'unknown';
+  } else {
+    kind = 'unknown';
+  }
+  // 调用方**确知**是哪一类时可以直接指定（例如 checkTimestamps 的报错文案里没有上面那些
+  // 关键词，但"帧数对、时间戳不齐"在语义上就是拼接这一步的问题）。
+  if (!o?.hint && text && /帧距不齐|首帧 PTS|时间戳/.test(text) && !frameDiff) kind = 'stitch';
+  if (o?.hint) kind = String(o.hint);
+
+  const STEP = {
+    chunk: '分块渲染（这一块）', stitch: '拼接 / 封装', final: '产物守门', parallel: '并行渲染',
+    render: '渲染',
+  };
+  const step = o?.step ?? STEP[phase] ?? '产物守门';
+  const chunkTag = o?.chunk ? `第 ${o.chunk.i}/${o.chunk.n} 块${o.chunk.range ? `（${o.chunk.range}）` : ''}` : '';
+  const nExp = expected != null ? `${expected} 帧` : '期望帧数';
+  const nGot = got != null ? `${got} 帧` : '实际帧数';
+
+  /** 已知原因：确定性、重跑无意义 —— 给出**该做什么**，不给"重跑"。 */
+  const knownNext = {
+    encode: [
+      `已知原因（确定性）：${chunkTag ? chunkTag + '的' : ''}这个文件 ffmpeg 没写完 —— 半截流 / 没写 moov / 0 字节，渲染进程还没 finalize 就被结束了。`,
+      '下一步：① 先把预期帧数与实际帧数对一遍（差几帧 ⇒ 尾部被切；差很多 ⇒ 中途断流）；',
+      '        ② 帧数差在个位数且这条命令带音轨 ⇒ 看封装参数是不是 -af apad 与 -shortest 成对（AAC 的记账时长比视频短几十毫秒，会把视频尾巴切掉）；',
+      '        ③ 差几十上百帧 ⇒ 是渲染中途断流：渲染期间不要写仓库里任何文件（改一次就 HMR 重载 → 断流），渲染时也别让别的进程清理 out/；',
+      '        ④ 修完再跑 —— 这一步的结果由文件与参数决定，**不修任何东西的重跑一定是同一个错**。',
+    ],
+    stitch: [
+      `已知原因（确定性）：拼接 / 封装这一步出错，画面本身没问题（各块都已经单独通过守门）。`,
+      frameDiff && diff != null && Math.abs(diff) <= 60
+        ? `  上面这条「${nGot} ≠ ${nExp}（差 ${diff > 0 ? '+' : ''}${diff}）」是**尾部被切掉**的典型签名：音轨封装用了 -shortest 却没有 -af apad —— AAC 有 priming/padding，音频流的记账时长比视频短几十毫秒，于是视频尾巴被当成"多余"切掉几帧。`
+        : '  先看上面那条 ffprobe 到底差了几帧、差在哪个方向，再对号入座。',
+      '下一步：① 核对封装参数：`-af apad` 与 `-shortest` 必须**成对**出现（apad 让音轨变无限长，-shortest 才会停在视频最后一帧）；',
+      '        ② 核对拼接参数：concat 必须带 `-copyts`（否则帧数对、时间戳不均匀，帧率会变成 60.08 那种）；',
+      '        ③ 改完再跑同一条命令 —— 已渲好的块会跳过，不需要重渲画面。',
+    ],
+    scene: [
+      chunkTag
+        ? `已知原因（确定性）：这一块**自己**少渲了 ${Math.abs(diff ?? 0)} 帧 —— 画面停在半路，多半是场景在某个时刻抛异常 / 页面在渲染途中崩了（HMR 重载也走这条路）。`
+        : '已知原因（确定性）：渲染侧没有收满帧 —— 画面停在半路。',
+      '下一步：① 先定位是哪一段、哪个时刻：node scripts/anim.mjs check <任务>（会点名段与时刻）；',
+      '        ② 出那一帧的图看：node scripts/anim.mjs still <任务> -t <时刻> --only <段>；',
+      '        ③ 渲染期间**一个文件都别写**（连 docs/*.md 也不行：编辑器的原子写挡不住 watch，撞 EBUSY 会让 Vite 崩）；',
+      '        ④ 改完再跑同一条命令 —— 已渲好的块会跳过，重跑只补没渲完的块。',
+    ],
+    input: [
+      `已知原因（确定性）：ffprobe 在这个文件里读不到视频流（帧数 / 分辨率都拿不到），所以"帧数对不对"这件事**根本没有验过** —— 它不等于"验过了、没问题"。`,
+      '下一步：① 确认产物真的被写出来了（文件大小 > 0）、路径就是命令行里那一条；',
+      '        ② 若是从别处拷来的文件，重新跑一遍出片命令（分块路径下已渲好的块会跳过）。',
+    ],
+  };
+
+  /** 未知原因：可能是瞬时 —— 重跑**可能**好，但要先做一件比重跑便宜的事。 */
+  const unknownNext = [
+    '这条不匹配任何已知的确定性根因，所以**可能是瞬时的**（磁盘满 / 内存或句柄耗尽 / 杀软或同步盘锁住了文件 / GPU 掉线 / 被外部进程中断）。',
+    '下一步（按这个顺序）：① 先看那条原始报错本身（上面的 · 行），别跳过它去重跑；',
+    '                      ② 确认磁盘还有空间、out/ 没被别的进程（清理 / 同步盘）碰过；',
+    retryable
+      ? '                      ③ 再重跑同一条命令：已渲好的部分会跳过，代价只是没渲完的那部分。'
+      : '                      ③ 确认上面两条之后可以重跑一次；若**同样**的错再来一次，它就属于确定性失败，别再重跑，按 check → still 的顺序定位。',
+  ];
+
+  const next = knownNext[kind] ?? unknownNext;
+  const where = chunkTag ? `${chunkTag} ` : '';
+  const what = kind === 'stitch' ? '拼接 / 封装出错'
+    : kind === 'encode' ? '文件没写完（半截流 / 没写 moov）'
+      : kind === 'scene' ? '画面没渲完'
+        : kind === 'input' ? '产物读不出视频流'
+          : '产物读不出来';
+  const headline = kind === 'unknown'
+    ? `${step}失败：原因未知（可能是瞬时，也可能是没被识别出来的确定性根因）。`
+    : `${step}失败：${where}${what} —— 这是**已知原因**（确定性），重跑不会有不同结果。`;
+  // ⚠ 收尾那句必须与 `kind` 一致：未知原因那一档**不能**说"重跑一定得到同样的结果"
+  //   （那正好和它自己的 "可能是瞬时的" 打架 —— 样例输出就是这么发现这处矛盾的）。
+  const retryLine = retryable && kind !== 'unknown'
+    ? '  重跑有意义（已渲好的部分会跳过）：但先按上面的「下一步」做一件事再跑，别原地空转。'
+    : kind === 'unknown'
+      ? '  重跑**可能**有用（这类失败不保证可复现）；但先把上面那几件事查一遍再跑，别拿重跑当诊断。'
+      : '  ⚠ 不要直接重跑同一条命令：这一步是确定性的，不修任何东西的重跑会得到**同样的**结果。';
+
+  return {
+    kind, known: kind !== 'unknown', retryWorthwhile: retryable, headline, next, retryLine,
+    expected, got, diff,
+  };
+}
+
+/**
+ * 守门失败的报告正文（纯函数，可离线单测）：问题列表 + 分类 + 下一步。
+ * @param {{ problems: string[], title?: string }} o
+ * @param {Parameters<typeof decideGateFailure>[0]} ctx
+ * @returns {string[]}
+ */
+function gateFailureLines(o, ctx) {
+  const d = decideGateFailure({ ...ctx, problems: o.problems });
+  const lines = [o.title ?? '产物验收不通过：', ...(o.problems ?? []).map((b) => `  · ${b}`)];
+  if (ctx && ctx.note) lines.push(`  （${ctx.note}）`);
+  lines.push('', `  ${d.headline}`, ...d.next.map((l) => `  ${l}`), d.retryLine);
+  return lines;
+}
 
 /* ------------------------------------------------------------------ 任务发现 */
 
@@ -866,6 +1128,17 @@ async function cmdCheck() {
   const task = pickTask();
   log(`检查任务 ${task} …`);
 
+  /**
+   * 「空 ≠ 干净」（`docs/BACKLOG.md` 1-19）：任何**没跑成 / 被跳过 / 不可用**的审计都进这里，
+   * 末尾统一打一段 `skipped:`。以前它们只是"少打一行"，读输出的 agent 会把
+   * 「没报错」当成「通过」——三个外部参考项目独立指向的正是这个失败模式。
+   *
+   * ⚠ 这个列表**不参与退出码**（`tools/regress-all.mjs` 有 10 个 `check:*` 项依赖
+   *   `check` 的退出码语义）；要 gate 就显式加 `--strict`。
+   */
+  const skipped = [];
+  const strict = flag('strict');
+
   // 1) 静态：非确定性写法（这是整个引擎的地基，必须拦）
   const statics = scanScenes(task);
   for (const s of statics) warn(`⚠ ${s}`);
@@ -880,9 +1153,9 @@ async function cmdCheck() {
   // ⚠ 只 warn 不 fail：已经交付的片子（sodium/optifine）必然命中，让 check 非零退出
   //   会把回归清单永久染红，反而没人看了。要卡死就在交付自检里跑那条命令（AGENTS.md §10.9）。
   {
+    const lint = path.join(ROOT, 'tools', 'lint-narration-dup.mjs');
     try {
       const { spawnSync } = await import('node:child_process');
-      const lint = path.join(ROOT, 'tools', 'lint-narration-dup.mjs');
       if (existsSync(lint)) {
         const r = spawnSync(process.execPath, [lint, task], { encoding: 'utf8', timeout: 30000 });
         const txt = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
@@ -892,11 +1165,18 @@ async function cmdCheck() {
           warn('  → 画面只留标注（名词 / 数字 / 单位 / 出处），句子交给旁白与字幕；见 docs/CAPTIONS.md');
         } else if (r.status === 2) {
           warn(`⚠ lint-narration-dup 没跑成：${String(txt).split(/\r?\n/)[0]}`);
+          pushSkipped(skipped, '旁白复述检查（lint-narration-dup）', `它自己以退出码 2 退出（工具内部错误，不是"没命中"）：${String(txt).split(/\r?\n/)[0] || '(没有输出)'}`);
+        } else if (r.status !== 0) {
+          warn(`⚠ lint-narration-dup 异常退出（status ${r.status}，signal ${r.signal ?? '无'}）`);
+          pushSkipped(skipped, '旁白复述检查（lint-narration-dup）', `退出码 ${r.status} / signal ${r.signal ?? '无'} —— 这一项既没报"命中"也没报"干净"，等于没验`);
         }
+      } else {
+        pushSkipped(skipped, '旁白复述检查（lint-narration-dup）', `工具不存在：${path.relative(ROOT, lint)}`);
       }
     } catch (err) {
-      // 受限沙箱里 spawn 可能被拒（EPERM）：这不是 check 的失败，说一句就好
-      warn(`（旁白复述检查跳过：${String(err && err.message ? err.message : err).split('\n')[0]}）`);
+      // 受限沙箱里 spawn 可能被拒（EPERM）：这不是 check 的失败，但也**不是通过**
+      warn(`（旁白复述检查跳过：${firstLine(err)}）`);
+      pushSkipped(skipped, '旁白复述检查（lint-narration-dup）', `起不了这个子进程：${firstLine(err)}`);
     }
   }
 
@@ -982,10 +1262,18 @@ async function cmdCheck() {
         } else {
           log(`\n背景守门：${world.results.length} 个交叠段都铺满了整帧背景（其中 ${risky.length} 段声明了转场/共享背景）`);
         }
+      } else {
+        // 「空 ≠ 干净」：审计跑通了、但一个段都没被翻出来。以前这里**一行都不打**，
+        // 输出里于是完全看不出"背景守门根本没生效"。
+        const nSeg = info.timeline?.length ?? 0;
+        warn(`\n⚠ 背景守门没有翻出任何一段（本会话加载了 ${nSeg} 段）—— 这次"没报问题"是因为**没东西可查**，不是因为背景都对。`);
+        warn('  → 时间线里确实没有交叠段/共享背景时这是正常的；否则说明 worldAudit 这条路挂了，去查页面侧。');
+        pushSkipped(skipped, '背景守门（worldAudit）', `跑了，但返回 0 段（本会话加载 ${nSeg} 段）—— 没有可查的对象，不能算通过`);
       }
     } catch (err) {
       if (err && err.readable) throw err;      // 页面失联：照实抛出，不要吞成"背景守门不可用"
-      log(`\n（背景守门不可用：${String(err && err.message ? err.message : err).split('\n')[0]}）`);
+      log(`\n（背景守门不可用：${firstLine(err)}）`);
+      pushSkipped(skipped, '背景守门（worldAudit）', firstLine(err));
     }
 
     const t0 = Date.now();
@@ -1018,7 +1306,8 @@ async function cmdCheck() {
           } catch (err) {
             // 页面失联（HMR 重载 / 崩了）是**致命**诊断，别降级成"多子帧不可用"混过去
             if (err && err.readable) throw err;
-            multiNote = `  ← 多子帧不可用：${String(err && err.message ? err.message : err).split('\n')[0]}`;
+            multiNote = `  ← ⚠ 多子帧这一条路径**没跑**（skipped）：${firstLine(err)}`;
+            pushSkipped(skipped, `多子帧路径（${it.id} t=${t.toFixed(2)}s）`, firstLine(err));
           }
         }
         const one = await statsAt(t, { samples: 1 });
@@ -1041,7 +1330,13 @@ async function cmdCheck() {
             (tt) => /** @type {any} */ (window).__anim.nonFinite(tt), t,
           );
         } catch (err) {
-          nf = { error: String(err && err.message ? err.message : err).split('\n')[0] };
+          nf = { error: firstLine(err) };
+        }
+        if (nf && nf.error) {
+          // 「空 ≠ 干净」（1-19）：这一项**没跑成**（不是"扫了、没扫到"）。以前它静默消失，
+          // 于是"整屏白 = NaN/Inf"这条最贵的诊断会在最需要它的时候不见踪影。
+          warn(`      ← ⚠ 非有限值扫描**没跑**（skipped）：${nf.error}`);
+          pushSkipped(skipped, `非有限值扫描（${it.id} t=${t.toFixed(2)}s）`, nf.error);
         }
         if (nf && !nf.error && nf.bad > 0) {
           const pct = ((nf.bad / Math.max(1, nf.pixels)) * 100).toFixed(1);
@@ -1129,8 +1424,28 @@ async function cmdCheck() {
       warn('\n浏览器控制台：');
       for (const l of session.consoleLog.slice(0, 15)) warn('  ' + l);
     }
-    if (errs.length) { warn(`\n✗ 有 ${errs.length} 个问题`); process.exitCode = 1; }
-    else log('\n✓ 没有发现问题（单子帧与多子帧两条路径都验过了）');
+
+    /**
+     * 「空 ≠ 干净」（`docs/BACKLOG.md` 1-19）：把**没跑成 / 被跳过 / 不可用**的审计
+     * 明明白白列出来，并且写进结论行。这一段永远出现（哪怕是 `skipped: 无`）——
+     * 否则"确实全跑了"和"这一段整个没执行"在输出里长得一模一样。
+     *
+     * ⚠ 不改退出码：`tools/regress-all.mjs` 有 10 个 `check:*` 项依赖它。
+     *   要把它当门用就显式 `--strict`（默认关）。
+     */
+    const skippedLines = formatSkipped(skipped);
+    if (skipped.length) { warn(''); for (const line of skippedLines) warn(line); }
+    else log(`\n${skippedLines[0]}`);
+    if (strict && skipped.length) {
+      warn(`  --strict：把 ${skipped.length} 项"没跑"当成失败（退出码 1）。`);
+      process.exitCode = 1;
+    }
+    if (errs.length) {
+      warn(`\n${checkVerdictLine({ problems: errs.length, skipped: skipped.length })}`);
+      process.exitCode = 1;
+    } else {
+      log(`\n${checkVerdictLine({ skipped: skipped.length })}（单子帧与多子帧两条路径都验过了）`);
+    }
   } finally { await closeSession(); }
 }
 
@@ -2401,13 +2716,37 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
     });
     if (r.frames < expect) {
       try { rmSync(file, { force: true }); } catch { /* ignore */ }
+      const d = decideGateFailure({
+        problems: [],
+        phase: 'chunk',
+        reusable: true,
+        chunk: { i: i + 1, n: chunks.length, range: `${c.from.toFixed(2)}–${c.to.toFixed(2)}s` },
+        expected: expect,
+        got: r.frames,
+      });
       die(
         `第 ${i + 1} 块的帧数不足（${r.frames}/${expect} 帧，${c.from.toFixed(2)}–${c.to.toFixed(2)}s），已删掉这一块。\n` +
         `  最近一次进展：${r.progressWhy}\n` +
-        `  其他已渲好的块会保留：修好之后直接重跑同一条命令即可，只需重渲这一块。`,
+        // ⚠ 措辞按「已知 / 未知」分开（BACKLOG 1-3）：分块这一步**确实**能靠重跑恢复
+        //   （已渲好的块会跳过），所以这里保留"重跑"，但把**代价与前提**写清楚 ——
+        //   不修任何东西的重跑只会得到同样的半块。
+        `  ${d.headline}\n` +
+        d.next.map((l) => `  ${l}`).join('\n') + '\n' +
+        `  其他已渲好的块会保留：确认上面那些之后重跑同一条命令，只会重渲这一块（画面不必重渲）。`,
       );
     }
-    if (r.code !== 0) die(`第 ${i + 1} 块 ffmpeg 退出码 ${r.code}${r.exitSignal ? `（信号 ${r.exitSignal}）` : ''}`);
+    if (r.code !== 0) {
+      // ffmpeg 非零退出：**可能是瞬时的**（被外部中断 / 磁盘满 / 编码器掉线），
+      // 所以这一类不禁重跑，只要求先看一眼原因（BACKLOG 1-3）。
+      die(
+        `第 ${i + 1} 块 ffmpeg 退出码 ${r.code}${r.exitSignal ? `（信号 ${r.exitSignal}）` : ''}\n` +
+        `  这一类**不在"确定性失败"里** —— ffmpeg 非零退出可能是瞬时的（被外部中断 / 磁盘满 / 编码器掉线），\n` +
+        `  也可能是确定性的（参数写错 / 编码器不支持）。\n` +
+        `  下一步：① 先看它最后打印的那几行（分块渲染时 ffmpeg 的输出在 out/<任务>/<任务>.parts/ 附近）；\n` +
+        `          ② 确认磁盘还有空间；\n` +
+        `          ③ 再重跑同一条命令（其他块会跳过，只补这一块）。`,
+      );
+    }
     // 场景抛异常（P0-3）：帧数可能是齐的、ffprobe 也挑不出毛病，但画面里是错帧卡片。
     // 所以**先判异常再判产物**，并且把这一块删掉 —— 留着它只会让下一轮误以为已经渲好了。
     if (r.renderErrors?.length) {
@@ -2421,12 +2760,17 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
     const bad = await checkVideoFile(file, expect, { what: `第 ${i + 1} 块`, fps });
     if (bad.length) {
       try { rmSync(file, { force: true }); } catch { /* ignore */ }
-      die(
-        `第 ${i + 1} 块的产物验收不通过，已删掉它：\n` +
-        bad.map((b) => `  · ${b}`).join('\n') + '\n' +
-        `  （渲染侧收到 ${r.frames}/${expect} 帧，ffmpeg 退出码 ${r.code}）\n` +
-        `  修好之后重跑同一条命令：其他块会跳过，只补这一块。`,
-      );
+      die(gateFailureLines(
+        { title: `第 ${i + 1} 块的产物验收不通过，已删掉它：`, problems: bad },
+        {
+          phase: 'chunk',
+          reusable: true,
+          chunk: { i: i + 1, n: chunks.length, range: `${c.from.toFixed(2)}–${c.to.toFixed(2)}s` },
+          expected: expect,
+          got: r.frames,
+          note: `渲染侧收到 ${r.frames}/${expect} 帧，ffmpeg 退出码 ${r.code}`,
+        },
+      ).join('\n'));
     }
     log(`         ✓ ${r.frames} 帧，${(r.elapsed / 1000).toFixed(1)}s`);
     files.push({ file, expect });
@@ -2489,17 +2833,14 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
   const bad = [...stitchedBad, ...finalBad];
   if (bad.length) {
     try { rmSync(out, { force: true }); } catch { /* ignore */ }
-    die(
-      `产物验收不通过，已删除 ${path.relative(ROOT, out)}：\n` +
-      bad.map((b) => `  · ${b}`).join('\n') + '\n' +
-      // ⚠ 措辞按「已知 / 未知」分开（`docs/IMPROVEMENTS-4.md` §1.5）：这一步是**确定性**的，
-      //   写"重跑即可"会把人指偏（那一次照着重跑一遍，白等 30 秒，还是 −3 帧）。
-      `  各块本身都通过了守门，所以问题出在**拼接 / 封装**这一步。\n` +
-      `  这一步是确定性的：**同一条命令重跑会得到同样的结果**，重跑解决不了。已渲好的块会保留，改完再跑。\n` +
-      `  两个已知原因：① 音轨封装用了 -shortest 却没有 -af apad —— AAC 的记账时长比视频短几十毫秒，\n` +
-      `     于是视频尾巴被切掉几帧；② concat 拼接没带 -copyts —— 帧数对但时间戳不均匀。\n` +
-      `  先看上面那条 ffprobe 差了几帧、差在哪个方向，再对号入座。`,
-    );
+    // ⚠ 措辞按「已知 / 未知」分开（`docs/BACKLOG.md` 1-3 / `IMPROVEMENTS-4.md` §1.5）：
+    //   这一步是**确定性**的，写"重跑即可"会把人指偏（那一次照着重跑一遍，白等 30 秒，
+    //   帧数一模一样）。措辞现在统一由 `decideGateFailure()` 生成 —— 与分块路径、
+    //   并行路径、直播路径共用一个判据，免得同一件事在四个地方四种说法。
+    die(gateFailureLines(
+      { title: `产物验收不通过，已删除 ${path.relative(ROOT, out)}：`, problems: bad },
+      { phase: 'stitch', expected: frames, note: '各块本身都通过了守门，所以问题出在**拼接 / 封装**这一步' },
+    ).join('\n'));
   }
 
   const st = statSync(out);
@@ -2690,15 +3031,28 @@ async function cmdVideo(short = false) {
       let removed = '';
       try { rmSync(out, { force: true }); removed = `已删除 ${path.relative(ROOT, out)}`; }
       catch { removed = `删除 ${path.relative(ROOT, out)} 失败，请手动删掉它`; }
+      // ⚠ 措辞按「已知 / 未知」分开（`docs/BACKLOG.md` 1-3）：直播这一条路**没有可复用的块**
+      //   —— 重跑就是整片重渲，而"渲染期间改了文件"/"页面崩了"这类根因是**确定性**的，
+      //   不修就重跑＝白等一整片。所以这里只给"先做什么"。
       die(
         `只渲染了 ${frames}/${total} 帧，成片不完整，${removed}。\n` +
         `  ffmpeg 退出码 ${code}。最近一次进展：${r.progressWhy}\n` +
-        `  常见原因：渲染期间改动了 tasks/ 或 src/ 下的文件（CLI 的私有 Vite 会 HMR 重载页面 → WebSocket 断开），\n` +
-        `            或者页面渲染报错/崩溃（加 --headed 能看到控制台）。\n` +
-        `  建议：长时间渲染期间不要碰工作区（日志写到 $env:TEMP），改完再渲；长片子用 --segments 分块，已渲好的块会保留。`,
+        `  ${knownCauseHeadline('interrupted')}\n` +
+        `  下一步：① 先看"最近一次进展"停在哪一帧 —— 那附近就是断点；\n` +
+        `          ② 如果渲染期间动过 tasks/ 或 src/ 下任何文件，那就是根因：私有 Vite 会 HMR 重载页面 → WebSocket 断开\n` +
+        `             （连 docs/*.md 也不行：编辑器的原子写会留下 .tmp，watch 挡不住，撞 EBUSY 直接让 Vite 崩）；\n` +
+        `          ③ 否则看是不是页面渲染报错/崩溃（加 --headed 能看到控制台）；\n` +
+        `          ④ 改完之后：长片子用 --segments 分块，已渲好的块会保留，重跑只补没渲完的块。`,
       );
     }
-    if (code !== 0) die(`ffmpeg 退出码 ${code}${r.exitSignal ? `（信号 ${r.exitSignal}）` : ''}`);
+    if (code !== 0) {
+      die(
+        `ffmpeg 退出码 ${code}${r.exitSignal ? `（信号 ${r.exitSignal}）` : ''}\n` +
+        `  这一类**不在"确定性失败"里** —— 可能是瞬时的（被外部中断 / 磁盘满 / 编码器掉线），也可能是参数问题。\n` +
+        `  下一步：① 确认磁盘还有空间、out/ 没被别的进程碰过；② 再重跑一次；\n` +
+        `          ③ 同样的错再来一次就按确定性处理：先 node scripts/anim.mjs check <任务>，再考虑换 --vcodec / --preset。`,
+      );
+    }
 
     /**
      * 渲染期间改了模块图里的文件（P2-2）→ 产物**混合了两个版本**，不能算成片。
@@ -2720,12 +3074,17 @@ async function cmdVideo(short = false) {
     const bad = await checkVideoFile(out, total, { what: path.relative(ROOT, out), fps });
     if (bad.length) {
       try { rmSync(out, { force: true }); } catch { /* ignore */ }
-      die(
-        `产物验收不通过，已删除 ${path.relative(ROOT, out)}：\n` +
-        bad.map((b) => `  · ${b}`).join('\n') + '\n' +
-        `  （渲染侧收到 ${frames}/${total} 帧，ffmpeg 退出码 ${code}）\n` +
-        `  这不是"看起来差不多"，是文件本身不合格：先按上面的帧数差判断是断流还是编码被截断。`,
-      );
+      // ⚠ 「已知 / 未知」分开措辞（`docs/BACKLOG.md` 1-3）：这里以前只说"先按帧数差判断"，
+      //   既没说清这是确定性失败，也没说下一步做什么。
+      die(gateFailureLines(
+        { title: `产物验收不通过，已删除 ${path.relative(ROOT, out)}：`, problems: bad },
+        {
+          phase: 'final',
+          expected: total,
+          got: frames,
+          note: `渲染侧收到 ${frames}/${total} 帧，ffmpeg 退出码 ${code}`,
+        },
+      ).join('\n'));
     }
     log(`\n✓ ${path.relative(ROOT, out)}`);
     log(`  ${frames} 帧（ffprobe 复核 ${total} 帧），用时 ${(elapsed / 1000).toFixed(1)}s（${(frames / (elapsed / 1000)).toFixed(1)} fps 渲染速度）`);
@@ -3193,10 +3552,30 @@ function failOnRenderErrors(errs, extra = '') {
   for (const line of errs.text.slice(0, 8)) warn('  · ' + line);
   if (errs.text.length > 8) warn(`  · …还有 ${errs.text.length - 8} 处的段`);
   warn(`\n  这些帧画出的是**错帧卡片**（暗红底 + 红框 + ✗ SCENE ERROR），不是画面内容。`);
-  warn(`  复现：node scripts/anim.mjs check <任务>（会点名段），再用 still --only <段> -t <时刻> 看图。`);
+  // ⚠ 措辞按「已知 / 未知」分开（`docs/BACKLOG.md` 1-3）：场景抛异常是**确定性**的 ——
+  //   同一份代码、同一个时刻，跑多少次都是同一个异常。以前这里只说"复现"，
+  //   读的人很容易顺手重跑一遍出片命令，白等一整片的时间（而且产物还是会被删掉）。
+  warn(`  ${knownCauseHeadline('scene')}`);
+  warn(`  下一步：① 复现并点名：node scripts/anim.mjs check <任务>（会报段名与时刻）；`);
+  warn(`          ② 看那一帧的图：node scripts/anim.mjs still <任务> -t <时刻> --only <段>；`);
+  warn(`          ③ 改代码 —— **不要直接重跑出片**：不修代码的重跑会得到同样的错帧卡片。`);
   if (extra) warn('\n' + extra);
   process.exitCode = 1;
   die(`场景抛异常，已停止（不产出成片）。`);
+}
+
+/**
+ * 一句"这是已知原因 / 原因未知"的定性（纯函数，与 `decideGateFailure` 同一套口径）。
+ * @param {'scene'|'interrupted'} kind
+ */
+function knownCauseHeadline(kind) {
+  if (kind === 'scene') {
+    return '这是**已知原因**（确定性）：场景代码在某个时刻抛异常，重跑不会有不同结果。';
+  }
+  if (kind === 'interrupted') {
+    return '这是**已知原因**（确定性）：画面渲染到一半停了（断流/崩溃），同一份代码、同样的环境重跑会停在同一个地方。';
+  }
+  return '这条不匹配任何已知的确定性根因，可能是瞬时的（磁盘满 / 内存耗尽 / 被外部中断 / GPU 掉线）。';
 }
 
 async function cmdPerf() {
@@ -3677,15 +4056,39 @@ async function renderParallel({ task, info, out, from, to, fps, samples, shutter
 
   const failed = results.filter((r) => !r || r.code !== 0);
   if (failed.length) {
-    die(`并行渲染有 ${failed.length}/${merged.length} 段失败。已渲好的段保留在 ${path.relative(ROOT, dir)}，\n` +
-      `  修好之后重跑同一条命令即可（不过目前是整段重渲，见下面的说明）。`);
+    // ⚠ 措辞按「已知 / 未知」分开（`docs/BACKLOG.md` 1-3）：`--parallel` 这条路的失败**没有
+    //   什么可复用的** —— 它是"整段重渲"（与 --segments 不同，`--segments` 会跳过已渲好的块）。
+    //   所以这句以前写的"修好之后重跑同一条命令即可"成本极高，而且它把两件完全不同的事
+    //   混成了一句：**输入性的失败**（场景/参数写错，重跑一百次都一样）与**资源性的失败**
+    //   （并发把内存/显存挤爆、磁盘满、GPU 掉线，重跑降并发确实能过）。
+    const reasons = failed.map((r) => `第 ${(r?.i ?? 0) + 1} 段`).join('、');
+    die(
+      `并行渲染有 ${failed.length}/${merged.length} 段失败（${reasons}）。\n` +
+      `  已渲好的段仍在 ${path.relative(ROOT, dir)}，但**这一步没有可复用的块**：重跑就是整段重渲。\n` +
+      `  失败分两类，先判是哪一类（上面的日志尾部就是依据）：\n` +
+      `    · 输入性（已知原因、确定性）—— 段名/参数写错、场景在某个时刻抛异常、时间线不合法。\n` +
+      `      重跑不会有不同结果；先 node scripts/anim.mjs check <任务> 点名段与时刻，再改。\n` +
+      `    · 资源性（可能是瞬时）—— 并发把内存/显存挤爆、磁盘满、GPU 掉线、被外部中断。\n` +
+      `      先降并发再跑：--parallel ${Math.max(1, Math.floor(n / 2))}（并发度上限应按 物理核数-2 与 内存/3GiB 取小）。\n` +
+      `  每段的完整输出在 ${path.relative(ROOT, dir)}/p*.log —— 先看第一个失败段的日志尾部，不要直接重跑。`,
+    );
   }
 
   // 逐段 ffprobe 守门
   for (const [i, r] of results.entries()) {
     const expect = Math.max(1, Math.round((r.to - r.from) * fps));
     const bad = await checkVideoFile(r.file, expect, { what: `第 ${i + 1} 段`, fps });
-    if (bad.length) die(`第 ${i + 1} 段的产物验收不通过：\n` + bad.map((b) => `  · ${b}`).join('\n'));
+    if (bad.length) {
+      die(gateFailureLines(
+        { title: `第 ${i + 1} 段的产物验收不通过：`, problems: bad },
+        {
+          phase: 'parallel',
+          step: '并行渲染（这一段）',
+          chunk: { i: i + 1, n: merged.length, range: `${r.from.toFixed(2)}–${r.to.toFixed(2)}s` },
+          expected: expect,
+        },
+      ).join('\n'));
+    }
   }
 
   // 拼接。
@@ -3703,10 +4106,20 @@ async function renderParallel({ task, info, out, from, to, fps, samples, shutter
   await runFfmpeg(['-y', '-loglevel', 'error', '-copyts', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', stitched]);
 
   const sBad = await checkVideoFile(stitched, expectTotal, { what: '并行拼接结果', fps, count: true });
-  if (sBad.length) die(`并行拼接后的产物不合格：\n` + sBad.map((b) => `  · ${b}`).join('\n'));
+  if (sBad.length) {
+    die(gateFailureLines(
+      { title: '并行拼接后的产物不合格：', problems: sBad },
+      { phase: 'stitch', expected: expectTotal, note: '各段本身都通过了守门，问题出在拼接这一步' },
+    ).join('\n'));
+  }
   // 时间戳也必须严格（帧距 / 首帧 PTS）—— 帧数对但时间戳漂了同样是废品
   const tsBad = await checkTimestamps(stitched, fps, expectTotal);
-  if (tsBad.length) die(`并行拼接后的时间戳不合格：\n` + tsBad.map((b) => `  · ${b}`).join('\n'));
+  if (tsBad.length) {
+    die(gateFailureLines(
+      { title: '并行拼接后的时间戳不合格：', problems: tsBad },
+      { phase: 'stitch', hint: 'stitch', expected: expectTotal, note: '帧数对但时间戳不均匀 —— 这一类几乎总是拼接参数的问题' },
+    ).join('\n'));
+  }
 
   if (withAudio && audioFile) {
     await runFfmpeg([
@@ -3723,7 +4136,10 @@ async function renderParallel({ task, info, out, from, to, fps, samples, shutter
   const bad = await checkVideoFile(out, expectTotal, { what: path.relative(ROOT, out), fps });
   if (bad.length) {
     try { rmSync(out, { force: true }); } catch { /* ignore */ }
-    die(`产物验收不通过，已删除 ${path.relative(ROOT, out)}：\n` + bad.map((b) => `  · ${b}`).join('\n'));
+    die(gateFailureLines(
+      { title: `产物验收不通过，已删除 ${path.relative(ROOT, out)}：`, problems: bad },
+      { phase: 'stitch', expected: expectTotal, note: '各段与拼接件本身都通过了守门，问题出在最后的封装（音轨）这一步' },
+    ).join('\n'));
   }
   log(`\n✓ ${path.relative(ROOT, out)}`);
   log(`  ${expectTotal} 帧（${results.length} 段并行拼接，ffprobe 复核通过），用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
@@ -4079,12 +4495,31 @@ const commands = {
   help,
 };
 
-try {
-  const fn = commands[cmd];
-  if (!fn) { warn(`未知命令 "${cmd}"`); help(); process.exit(1); }
-  await fn();
-  process.exit(process.exitCode ?? 0);
-} catch (err) {
-  await closeSession();
-  die(err && err.stack ? err.stack : String(err));
+/**
+ * 分发。⚠ 整个 CLI 只在本文件**被直接执行**时启动（`IS_MAIN`）：
+ * 单测（`tools/test-*.mjs` / `out/_staging/*.mjs`）要 import 上面那些纯函数
+ * （`formatSkipped` / `decideGateFailure` / `gateFailureLines`），
+ * 一 import 就跑一条命令会把单测变成"顺手出片"。
+ */
+if (IS_MAIN) {
+  try {
+    const fn = commands[cmd];
+    if (!fn) { warn(`未知命令 "${cmd}"`); help(); process.exit(1); }
+    await fn();
+    process.exit(process.exitCode ?? 0);
+  } catch (err) {
+    await closeSession();
+    die(err && err.stack ? err.stack : String(err));
+  }
 }
+
+export {
+  IS_MAIN,
+  pushSkipped,
+  firstLine,
+  formatSkipped,
+  checkVerdictLine,
+  decideGateFailure,
+  gateFailureLines,
+  knownCauseHeadline,
+};
