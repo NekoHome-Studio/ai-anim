@@ -639,7 +639,24 @@ async function main() {
     }
     check('真实任务 beat / demo / _config-lab 一条依赖问题都没有（不产生假报）',
       notClean.length === 0, notClean.join('；'));
-    const beatUsage = scanShotUsage(A.mod.taskShotSources('beat'), TEMPLATES).map((u) => u.shot);
+
+    // `audio` 字段判据（页面据此决定要不要加载音乐）：**误报是最贵的**（会把正常任务染红），
+    // 所以三种写法都要认、注释里的不算 —— 这里逐条钉住。
+    const audioCases = [
+      ["export default {\n  audio: './audio/a.mp3',\n};", true, '行首写法'],
+      ["export default { title: 'x', audio: './audio/a.mp3' };", true, '行内写法'],
+      ["const audio = './audio/a.mp3';\nexport default { audio };", true, 'const + shorthand'],
+      ["// audio: './audio/a.mp3'\nexport default {};", false, '注释里的不算'],
+      ["/* audio: './audio/a.mp3' */\nexport default {};", false, '块注释里的不算'],
+      ["export default { title: 'x' };", false, '真的没配'],
+    ];
+    const audioBad = audioCases.filter(([text, want]) => A.mod.audioDeclaredInConfig(text) !== want);
+    check('audio 字段判据：行首 / 行内 / const+shorthand 都算，注释里的不算',
+      typeof A.mod.audioDeclaredInConfig === 'function' && audioBad.length === 0,
+      audioBad.map(([, want, label]) => `${label}（期望 ${want}）`).join('；'));
+    check('真实任务 beat 的 audio 字段被判出来了（判据不是"永远 false"）',
+      A.mod.audioDeclaredInConfig(readFileSync(path.join(ROOT, 'tasks', 'beat', 'task.config.mjs'), 'utf8')) === true,
+      'beat 明明写着 audio: …，判据却说没有 —— 那会把 beat 假报成"没配 audio"');    const beatUsage = scanShotUsage(A.mod.taskShotSources('beat'), TEMPLATES).map((u) => u.shot);
     check('真的扫到了 beat 的三个音乐模板（扫描器不是"扫了个寂寞"）',
       MUSIC_SHOTS.every((n) => beatUsage.includes(n)),
       `beat 扫到的是 ${JSON.stringify(beatUsage)}`);

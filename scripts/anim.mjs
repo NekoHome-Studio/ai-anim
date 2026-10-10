@@ -1753,9 +1753,27 @@ function taskShotSources(task) {
 }
 
 /**
+ * 纯函数：任务配置文本里**有没有 `audio` 字段** —— 这就是"页面会不会加载音乐"的开关
+ * （`src/app.js:150`：`if (preTask.audio) music = await MusicData.load(...)`；否则一直是 `SILENT`）。
+ *
+ * ⚠ 这是**文本**判据（CLI 侧 import 不了任务配置，见 `resolveAudioTracks()` 的同款注释），
+ * 所以刻意放宽到"三面都认"：对象字面量里的 `audio:`（行首或 `,{` 之后都算）、
+ * 以及 `const audio = …` 这种先在变量里写、再 shorthand 进对象的写法。
+ * 宁可**漏报**（少报一条真问题）也不能误报 —— 误报会把一个本来正常的任务变成非零退出。
+ * 注释先被抹掉（`blankJsComments`），所以"注释里写着 audio: …"不算。
+ *
+ * @param {string} text task.config.mjs 的源码文本
+ */
+function audioDeclaredInConfig(text) {
+  const code = blankJsComments(text);
+  return /(^|[,{[\s])audio\s*:/.test(code)
+    || /(^|\n)[^\S\n]*(?:const|let|var)\s+audio\s*=/.test(code);
+}
+
+/**
  * 收集依赖校验的事实（**这一层做 IO，判据在 `shotDependencyIssues()` 里**）。
  *
- * `audioDeclared` 只看 `task.config.mjs` 里**有没有 `audio` 字段**（`src/app.js:150` 的判据），
+ * `audioDeclared` 只看 `task.config.mjs` 里**有没有 `audio` 字段**（`audioDeclaredInConfig()`），
  * 而不是 `resolveAudioTracks()` 那条"扫 `audio/` 目录"的兜底 —— 后者只影响 CLI 侧的分析与封装，
  * **不会**让页面加载音乐。两者的差别正是"任务在 audio/ 里放了 mp3、却忘了写 audio: 字段"
  * 这种静默失败能被点名的地方。
@@ -1767,8 +1785,8 @@ function shotDependencyFacts(task) {
   let cfg = '';
   try { cfg = readFileSync(path.join(dir, 'task.config.mjs'), 'utf8'); } catch { /* 读不到＝没配 */ }
   const code = blankJsComments(cfg);
-  const audioDeclared = /(^|\n)[^\S\n]*audio\s*:/.test(code);
-  const lit = /(^|\n)[^\S\n]*audio\s*:\s*(\{[^}]*\}|'[^']*'|"[^"]*")/.exec(code);
+  const audioDeclared = audioDeclaredInConfig(cfg);
+  const lit = /(^|[,{[\s])audio\s*:\s*(\{[^}]*\}|'[^']*'|"[^"]*")/.exec(code);
   const declaredValue = lit ? lit[2].replace(/^['"]|['"]$/g, '') : null;
 
   const tracks = resolveAudioTracks(task);
@@ -5501,6 +5519,7 @@ export {
   // 拿**真实任务**跑一遍（"用了 wave 的任务在有音乐时必须是干净的"这条断言只能这样验）
   taskShotSources,
   shotDependencyFacts,
+  audioDeclaredInConfig,
   // 评论文件（`out/<任务>/NOTES.json`，BACKLOG 1-29 后半）的读写/校验：纯函数，可离线断言
   NOTES_SCHEMA,
   PROTECTED_OUT_FILES,
