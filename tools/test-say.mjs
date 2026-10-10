@@ -15,6 +15,8 @@
  *   ⑥ 词级时间戳：驱动给了就用真的；驱动不给就标成近似（**不许静默**）
  *   ⑦ 产物：timing.json / timing.mjs / narration.json 三张表一致
  *   ⑧ `anim mix`：旁白摆位正确、时长 = 片子时长、空档处音乐在响
+ *   ⑨ **标点对齐的判据**（`docs/BACKLOG.md` 1-2）：驱动不报标点 = 正常，**不报警**；
+ *      排除标点后仍对不上（漏了实义字符）才报警 —— 两种情形都要**保住真时间戳**
  *
  * ⚠ 这个脚本的夹具任务建在**系统临时目录**里（不是 `tasks/`）：这样它跟正在跑的渲染
  *   完全互不干扰 —— 往仓库里写文件会让私有 Vite 的文件监听撞上 EBUSY 而崩掉（已实测）。
@@ -26,7 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeChannels, encodeMp3, writeWav16 } from '../scripts/lib/media.mjs';
-import { runSay, solveTiming } from '../scripts/lib/say.mjs';
+import { alignWords, runSay, solveTiming } from '../scripts/lib/say.mjs';
 import { runMix } from '../scripts/lib/mix.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -281,6 +283,91 @@ try {
   });
 } catch { threw = true; }
 check('时长为 0 的句子直接抛错（TTS 没出声不许静默通过）', threw);
+
+/* ── 7) 标点对齐（BACKLOG 1-2） ── */
+console.log('\n⑦ 标点对齐：只差标点 → 不报；漏了实义字符 → 照报');
+
+// 7.1 纯函数判据。`edge-tts` 的真实行为：WordBoundary **不报标点**，所以 47/47 句都会走到对齐这条路。
+const PUNCT = /[\s\p{P}\p{S}]/u;
+/** 按顺序给每个词编一段确定的时间戳（0.2s 一个）—— 只为看清"跳过的是哪几个字符" */
+const wAt = (...needles) => needles.map((w, i) => ({ w, start: i * 0.2, end: (i + 1) * 0.2 }));
+const alPunct = alignWords('先看一句话。', wAt('先', '看', '一句话'));
+check('alignWords：只少了标点 → ok，absorbed>0 但 stray 为空',
+  alPunct.ok && alPunct.absorbed === 1 && alPunct.stray === '',
+  `absorbed=${alPunct.absorbed} stray=${JSON.stringify(alPunct.stray)}`);
+check('alignWords：句号并进前一个词的尾巴 → 拼起来仍等于原文（karaoke 的位置前提）',
+  alPunct.words.map((w) => w.w).join('') === '先看一句话。', JSON.stringify(alPunct.words.map((w) => w.w)));
+check('alignWords：并进去的那个词时间戳没被改写',
+  alPunct.words[2].w === '一句话。' && close(alPunct.words[2].start, 0.4) && close(alPunct.words[2].end, 0.6),
+  JSON.stringify(alPunct.words[2]));
+
+const alSpace = alignWords('这是 Minecraft 里', wAt('这是', 'Minecraft', '里'));
+check('alignWords：空白也算"正常差异"（stray 为空）',
+  alSpace.ok && alSpace.absorbed === 2 && alSpace.stray === '',
+  `absorbed=${alSpace.absorbed} stray=${JSON.stringify(alSpace.stray)}`);
+
+const alStray = alignWords('先看一句话。', wAt('先', '看', '一', '话', '。'));
+check('alignWords：跳过了实义字符「句」→ stray 点名它（这才是异常）',
+  alStray.ok && alStray.stray === '句' && alStray.absorbed === 1,
+  `absorbed=${alStray.absorbed} stray=${JSON.stringify(alStray.stray)}`);
+check('alignWords：异常时也拼得回原文（不静默错位）',
+  alStray.words.map((w) => w.w).join('') === '先看一句话。', JSON.stringify(alStray.words.map((w) => w.w)));
+
+const alMiss = alignWords('先看一句话。', wAt('先', '听'));
+check('alignWords：原文里找不到词 → ok:false（走"不可用"，不静默）',
+  !alMiss.ok && /找不到词/.test(alMiss.why ?? ''), alMiss.why ?? '');
+
+// 7.2 端到端：把**缓存里**的词表改成"驱动不报标点"的样子再跑一遍。
+//     缓存判据只看 sha1（文本/音色/驱动没变就命中），所以改词表**不会**重新合成 —— 不联网。
+const voMp3 = path.join(TASK_DIR, 'audio', 'vo', 'alpha-1.mp3');
+const voWordsFile = `${voMp3}.words.json`;
+const wordsRaw = JSON.parse(readFileSync(voWordsFile, 'utf8'));   // stub 的逐字符词表（含标点）
+const writeVoWords = (list) => writeFileSync(voWordsFile, JSON.stringify(list, null, 1));
+const line1Of = (timing) => timing.scenes[0].lines[0];
+const runAgain = async () => {
+  const out = [];
+  const res = await runSay(TASK, { taskDir: TASK_DIR, tts: STUB, noVo: true, log: (...a) => out.push(a.join(' ')) });
+  return { log: out.join('\n'), timing: res.timing };
+};
+/** 真时间戳（句内相对秒）在整片时间的输出里还在不在 */
+const timestampsKept = (line, kept) => {
+  const off = line.offset;
+  return kept.every((w) => line.words.some(
+    (o) => Math.abs(o.start - off - w.start) <= 2e-3 && Math.abs(o.end - off - w.end) <= 2e-3,
+  ));
+};
+
+writeVoWords(wordsRaw.filter((w) => !PUNCT.test(w.w)));           // ← 驱动"不报标点"
+const keptPunct = wordsRaw.filter((w) => !PUNCT.test(w.w));
+check('（对照）改前的口径下这一句本来会命中',
+  keptPunct.map((w) => w.w).join('') !== '第一句。', keptPunct.map((w) => w.w).join(''));
+const r7 = await runAgain();
+const l7 = line1Of(r7.timing);
+check('只差标点 → 不再报警（改前每句一次 → 改后 0 次）',
+  !/没对应/.test(r7.log) && !/按顺序对齐/.test(r7.log),
+  r7.log.split('\n').find((l) => /没对应|按顺序对齐/.test(l))?.trim() ?? '（日志里没有这条）');
+check('读的是改过的缓存词表（0 句新合成）', /（0 句新合成/.test(r7.log));
+check('词级时间戳仍然是真的（没退化成按字数近似）',
+  l7.words.every((w) => !w.approx) && /4 句真词级时间戳 \/ 0 句按字数近似/.test(r7.log),
+  r7.log.split('\n').find((l) => /句真词级时间戳/.test(l))?.trim() ?? '');
+check('标点并进相邻词的尾巴 → 拼起来仍等于原文', l7.words.map((w) => w.w).join('') === '第一句。',
+  JSON.stringify(l7.words.map((w) => w.w)));
+check('驱动给的真时间戳原样还在', timestampsKept(l7, keptPunct), JSON.stringify(l7.words.map((w) => [w.start, w.end])));
+
+// 7.3 真异常：把实义字符「句」从词表里删掉（驱动漏报了一个字）—— 必须照报，而且不许静音成近似。
+writeVoWords(wordsRaw.filter((w) => w.w !== '句'));
+const r8 = await runAgain();
+const l8 = line1Of(r8.timing);
+const hitLine = r8.log.split('\n').find((l) => /实义字符没对应/.test(l))?.trim() ?? '（没有报警）';
+check('排除标点后仍对不上 → 照报（真异常没被一起静音掉）',
+  /实义字符没对应/.test(r8.log) && /"句"/.test(r8.log), hitLine);
+check('报警点名到段名 + 第几句（逐句，不再折叠）', /alpha 第 1 句/.test(r8.log), hitLine);
+check('真异常时照样保住真时间戳（不退化、拼得回原文）',
+  l8.words.every((w) => !w.approx) && l8.words.map((w) => w.w).join('') === '第一句。'
+  && timestampsKept(l8, wordsRaw.filter((w) => w.w !== '句')),
+  `join=${JSON.stringify(l8.words.map((w) => w.w).join(''))}`);
+
+writeVoWords(wordsRaw);                                           // 还原夹具
 
 /* ── 收尾 ── */
 console.log(`\n${'─'.repeat(60)}\n通过 ${pass}/${pass + fail}${fail ? `　❌ 失败 ${fail}` : '　✅ 全部通过'}`);

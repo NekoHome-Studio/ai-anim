@@ -290,6 +290,14 @@ export function splitWordsApprox(text, dur, at = 0) {
 }
 
 /**
+ * 「标点 / 符号 / 空白」—— 引擎里"不算实义字符"的那一档。
+ *
+ * 口径与 `splitWordsApprox()`（权重：实义 1、标点 0.45、空白 0.2）以及
+ * `tools/stub-tts.mjs` 的时长权重**完全一致**，别再各写一份。
+ */
+const isPunctOrSpace = (ch) => /[\s\p{P}\p{S}]/u.test(ch);
+
+/**
  * 把驱动给的词级时间戳**对齐**到原文上。
  *
  * 为什么需要它（实测）：`edge-tts` 的 `WordBoundary` **不报标点** ——
@@ -301,9 +309,22 @@ export function splitWordsApprox(text, dur, at = 0) {
  * 开头跳过的并进第一个词。这样 `out[].w` 拼起来仍然等于 `text`（karaoke 的位置前提），
  * 而时间是驱动给的真值。
  *
+ * ## 判据（BACKLOG 1-2）：跳过的**是什么**字符，决定要不要报
+ *
+ * 跳过的字符分两类，只有第二类才是异常：
+ *
+ * | 跳过的 | 例子 | 算不算异常 |
+ * |---|---|---|
+ * | 标点 / 符号 / 空白 | `。` `，` `「」` 空格 | **不算** —— 驱动本来就不报标点，每句都这样 |
+ * | 实义字符（汉字/字母/数字…） | 驱动漏报了某个字 | **算** —— 那个字没有真时间戳，很可能对错了位置 |
+ *
+ * 所以返回的 `stray`（跳过的实义字符）才是调用方该报警的判据；`absorbed`（跳过的字符总数）
+ * 只用来描述"并进尾巴"这件事本身。⚠ 上一版拿 `absorbed > 0` 当判据，结果
+ * **47/47 句全部命中**、把真异常淹没了（`docs/BACKLOG.md` 1-2）。
+ *
  * @param {string} text
  * @param {{w:string,start:number,end:number}[]} words
- * @returns {{ ok: boolean, words?: any[], absorbed?: number, why?: string }}
+ * @returns {{ ok: boolean, words?: any[], absorbed?: number, stray?: string, why?: string }}
  */
 export function alignWords(text, words) {
   const t = String(text);
@@ -311,14 +332,17 @@ export function alignWords(text, words) {
   const out = [];
   let i = 0;
   let absorbed = 0;
+  /** 跳过的字符原样攒起来（判定"差异是不是只来自标点"要看内容，不只看个数） */
+  let skippedText = '';
+  const skip = (s) => { absorbed += s.length; skippedText += s; };
   for (const w of words ?? []) {
     const needle = String(w?.w ?? '');
     if (!needle) continue;
     const idx = t.indexOf(needle, i);
     if (idx < 0) return { ok: false, why: `在原文里找不到词 "${needle}"（从第 ${i} 个字符往后）` };
     if (idx > i) {
-      absorbed += idx - i;
       const skipped = t.slice(i, idx);
+      skip(skipped);
       if (out.length) out[out.length - 1].w += skipped;
       else out.push({ w: skipped, start: Number(w.start), end: Number(w.start) });
     }
@@ -326,12 +350,15 @@ export function alignWords(text, words) {
     i = idx + needle.length;
   }
   if (i < t.length) {
-    absorbed += t.length - i;
-    if (out.length) out[out.length - 1].w += t.slice(i);
-    else out.push({ w: t.slice(i), start: 0, end: 0 });
+    const skipped = t.slice(i);
+    skip(skipped);
+    if (out.length) out[out.length - 1].w += skipped;
+    else out.push({ w: skipped, start: 0, end: 0 });
   }
   const joined = out.map((x) => x.w).join('');
-  return joined === t ? { ok: true, words: out, absorbed } : { ok: false, why: '对齐之后仍然拼不回原文' };
+  if (joined !== t) return { ok: false, why: '对齐之后仍然拼不回原文' };
+  const stray = Array.from(skippedText).filter((ch) => !isPunctOrSpace(ch)).join('');
+  return { ok: true, words: out, absorbed, stray };
 }
 
 /**
@@ -456,11 +483,17 @@ export function synthLine(driver, { file, text, voice, rate, force = false }) {
       if (!v.ok) note = `词级时间戳不可用：${v.why}`;
       else if (v.words.map((w) => w.w).join('') === text) words = v.words;
       else {
-        // 实测 edge-tts 不报标点 → 先对齐，别急着退化成近似（那会把真时间戳丢掉）
+        // 实测 edge-tts 不报标点 → 先对齐，别急着退化成近似（那会把真时间戳丢掉）。
+        // ⚠ 判据（BACKLOG 1-2）：**只有标点/空白**没对应是**正常**的（驱动根本不报标点），
+        //   不再报警 —— 上一版拿"跳过的字符数 > 0"当判据，47/47 句全部命中，
+        //   把真异常淹没了。跳过了**实义字符**（驱动漏报了一个字）才是真异常，照报。
         const al = alignWords(text, v.words);
         if (al.ok) {
           words = al.words;
-          note = `词级时间戳与原文有 ${al.absorbed} 个字符没对应（标点/空白），已按顺序对齐`;
+          if (al.stray) {
+            note = `词级时间戳与原文有 ${Array.from(al.stray).length} 个实义字符没对应`
+              + `（不是标点：${JSON.stringify(al.stray)}），已按顺序对齐（真时间戳保住了）`;
+          }
         } else note = `词级时间戳不可用：${al.why}`;
       }
     }
@@ -597,8 +630,11 @@ export async function runSay(task, opts) {
   let wordsReal = 0;
   let wordsApprox = 0;
   let trimmedTotal = 0;
-  /** 对齐提示会刷屏（每句都有标点差异），按"一句话一条 + 合计"折叠起来 */
-  const alignHits = [];
+  /**
+   * 逐句的"但书"。⚠ **正常情况不产生 note**：词表只少了标点/空白是驱动的正常行为
+   * （判据在 `alignWords()`，BACKLOG 1-2），不再每句报一次。所以这里剩下的每一条
+   * 都是真要在意的东西（漏字、时间戳不合法…），**逐句点名，不再折叠**。
+   */
   const otherNotes = [];
   for (const sc of script.scenes) {
     const lines = [];
@@ -608,10 +644,7 @@ export async function runSay(task, opts) {
       if (!r.cached) synthCount++;
       if (r.approx) wordsApprox++; else wordsReal++;
       trimmedTotal += r.trimmed ?? 0;
-      if (r.note) {
-        if (/按顺序对齐/.test(r.note)) alignHits.push(r.note.match(/(\d+) 个字符/)?.[1] ?? '?');
-        else otherNotes.push(`${sc.id} 第 ${i + 1} 句：${r.note}`);
-      }
+      if (r.note) otherNotes.push(`${sc.id} 第 ${i + 1} 句：${r.note}`);
       lines.push({
         cue: Number(l.cue),
         text: l.text,
@@ -625,10 +658,6 @@ export async function runSay(task, opts) {
     scenes.push({ id: sc.id, internal: Number(sc.internal), lines });
   }
   for (const n of otherNotes) log(`  · ${n}`);
-  if (alignHits.length) {
-    log(`· ${alignHits.length} 句的词级时间戳与原文有 ${Math.min(...alignHits.map(Number))}–${Math.max(...alignHits.map(Number))}`
-      + ` 个字符没对应（TTS 不报标点），已按顺序对齐 —— 真时间戳保住了（不是按字数近似）`);
-  }
   if (trimmedTotal > 0.3) {
     log(`· 每句尾巴上的静音已按"说到哪算到哪"处理：合计裁掉 ${trimmedTotal.toFixed(1)}s`
       + `（文件里还在，只是不算进这句的时长 —— 否则 slot 会被静音撑大）`);
