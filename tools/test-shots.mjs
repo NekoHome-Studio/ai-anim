@@ -282,6 +282,21 @@ async function main() {
   check('listShots() 报的 default 就是 defaults 里的值', jam.length === 0 && compared >= TEMPLATES.length,
     jam.length ? jam.slice(0, 4).join('；') : `只比到 ${compared} 个参数（期望 ≥ ${TEMPLATES.length} 个）`);
 
+  // ENGINE.md §14.9：「`--json` 只换一种呈现，不换数据源」+「不带 --json 的人读输出一个字都不变」。
+  // 1-21 之后 `listShots()` 的 `type` 改从模板的 `spec.params` 取（声明优先），所以这里把
+  // "**报出来的 type 与 meta.params 里写的一模一样**"变成断言 —— 人读那张表打的正是这个 type。
+  const typeJam = [];
+  for (const name of TEMPLATES) {
+    const entry = byName.get(name);
+    const metaParams = Array.isArray(M.SHOTS?.[name]?.meta?.params) ? M.SHOTS[name].meta.params : [];
+    for (const p of Array.isArray(entry?.params) ? entry.params : []) {
+      const want = metaParams.find((q) => q?.name === p?.name)?.type;
+      if (p?.type !== want) typeJam.push(`${name}.${p?.name}: 列出的是 ${JSON.stringify(p?.type)}，meta.params 里是 ${JSON.stringify(want)}`);
+    }
+  }
+  check('listShots() 报的 type 就是 meta.params 里的 type（人读那张表一个字不变）',
+    typeJam.length === 0, typeJam.slice(0, 4).join('；'));
+
   /* ---------------- §3 能拿到场景对象 ---------------- */
   console.log('\n§3 shot(名字) 拿到的场景对象');
   const callShot = (name, opts) => {
