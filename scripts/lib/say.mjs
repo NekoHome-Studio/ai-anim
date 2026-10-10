@@ -91,6 +91,112 @@ function which(cmd) {
 /** 找不到 BPM 时的兜底一拍（0.6s = 100bpm）——只在**没有任何节拍源**时用，而且会警告。 */
 const FALLBACK_BEAT = 0.6;
 
+/* ----------------------------------------------------- 批量容错（BACKLOG 1-6） */
+
+/**
+ * 逐句合成失败之后，**整批跑完再统一补跑**的轮数与两轮之间的等待。
+ *
+ * 为什么要有这一层：`edge-tts` 的偶发失败不是均匀分布的，同一时刻连着失败好几句很常见
+ * （服务端抖动）。第一版是"这一句重试耗尽就 throw"，于是几百句的长旁白停在第 180 句，
+ * 前面 179 句虽然都在缓存里、却要人工重跑一次。现在改成：
+ *
+ *   ① 第 1 遍：逐句合成，**失败也往下走**，只把失败句记进待补跑清单；
+ *   ② 补跑各轮：隔几秒，只重跑清单里那几句（缓存会把已经成功的一句不落地跳过）；
+ *   ③ 收尾：一句都没失败 ⇒ 行为与从前**逐字一致**；仍有失败 ⇒ 逐句点名、表**不写**、退出码 1。
+ *
+ * 等待与轮数可以用环境变量调（离线回归用，免得测试白等十几秒）：
+ * `ANIM_SAY_RETRY_WAIT`（毫秒，默认 2000）、`ANIM_SAY_RETRY_PASS`（轮数，默认 2）；
+ * `synthLine()` 里"同一句两次尝试之间"的退避单独一个 `ANIM_SAY_RETRY_BACKOFF`（默认 600ms）。
+ * ⚠ 这几个值**每次用时现读**，不是在模块加载时读死 —— 加载时读死的话，`tools/test-say.mjs`
+ *   这种"先 import 再设环境变量"的用法会静默失效（第一版就是，测试照旧白等 2s×2 轮）。
+ */
+function retryConfig() {
+  const num = (v, def) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, n) : def; };
+  return {
+    passes: num(process.env.ANIM_SAY_RETRY_PASS ?? 2, 2),
+    waitMs: num(process.env.ANIM_SAY_RETRY_WAIT ?? 2000, 2000),
+    // 同一句两次尝试之间：默认 600ms 起步、线性退避（600 / 1200 / …）
+    backoffMs: num(process.env.ANIM_SAY_RETRY_BACKOFF ?? 600, 600),
+  };
+}
+
+/**
+ * 把「驱动返回的结果」+「这句在脚本里的位置」拼成 `timing.json` 要的那条句子记录。
+ *
+ * ⚠ 这里是 `solveTiming()` 那道 `dur > 0` 硬判据的**上游守门**（BACKLOG 1-6 的硬边界）：
+ * `dur <= 0` / 非有限值**一律**当失败返回，绝不 `return { ok: true }` ——
+ * 那等于把"0 字节 / 0 时长"当成"成功合成了一句空话"，时长表会静默算错、画面与旁白错位。
+ * 实测到不了的路径也要挡住（`synthLine()` 现在会先返回 `failed`），挡住比漏过去便宜得多。
+ *
+ * @returns {{ ok: true, line: any } | { ok: false, reason: string }}
+ */
+export function buildLineResult(l, file, taskDir, r) {
+  if (r?.failed) return { ok: false, reason: String(r.reason ?? '驱动返回 failed（没给原因）') };
+  const dur = Number(r?.dur);
+  if (!Number.isFinite(dur) || !(dur > 0)) {
+    return {
+      ok: false,
+      reason: `拒绝把时长 ${r?.dur} 的句子当成功（0 时长混进时长表会让 slot 静默算错）—— 查 ${path.relative(taskDir, file).replace(/\\/g, '/')}`,
+    };
+  }
+  return {
+    ok: true,
+    line: {
+      cue: Number(l.cue),
+      text: l.text,
+      file: path.relative(taskDir, file).replace(/\\/g, '/'),
+      dur: round3(dur),
+      durFile: round3(r.durFile ?? dur),
+      words: r.words,
+      wordsApprox: r.approx,
+    },
+  };
+}
+
+/** 把待补跑清单排成"人一眼能照着修"的多行文本（段名 + 第几句 + 原句 + 原因尾巴）。 */
+function formatPending(pending) {
+  return pending.map((p) => {
+    const tail = String(p.reason ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-1)[0] ?? '';
+    return `    · [${p.sc}] 第 ${p.i + 1} 句「${p.text}」${tail ? ` —— ${tail}` : ''}`;
+  }).join('\n');
+}
+
+/**
+ * 合成一句；失败就记进待补跑清单，让**整批先跑完**（不再当场 throw）。
+ * 成功时把记下来的 `note` 打到日志里（与从前"最后统一打"是同一句话，只是不再攒着）。
+ */
+function collectLine({ sc, i, l, file, voice, rate, force, driver, taskDir, log, bail }) {
+  const rec = { sc: sc.id, i, text: l.text, file };
+  let r;
+  try {
+    r = synthLine(driver, { file, text: l.text, voice, rate, force });
+  } catch (e) {
+    // 意料外的失败（合成器/ffprobe 抛了）也走同一条路：批不为此停下，收尾统一上报
+    bail.push({ ...rec, reason: String(e?.message ?? e) });
+    return { ok: false };
+  }
+  const built = buildLineResult(l, file, taskDir, r);
+  if (!built.ok) { bail.push({ ...rec, reason: built.reason }); return { ok: false }; }
+  if (r.note) log(`  · ${sc.id} 第 ${i + 1} 句：${r.note}`);
+  return { ok: true, line: built.line, result: r };
+}
+
+/** 收尾（或某一轮补跑）只重跑清单里的那几句；返回修好的与仍然失败的。 */
+function retryFailed({ pending, script, voice, rate, force, driver, taskDir, log }) {
+  const fixed = [];
+  const still = [];
+  for (const p of pending) {
+    const sc = script.scenes.find((s) => s.id === p.sc);
+    const l = sc?.lines?.[p.i];
+    if (!l) { still.push(p); continue; }
+    const bail = [];
+    const got = collectLine({ sc, i: p.i, l, file: p.file, voice, rate, force, driver, taskDir, log, bail });
+    if (got.ok) fixed.push({ sc: p.sc, i: p.i, line: got.line, result: got.result });
+    else still.push(bail[0] ?? p);
+  }
+  return { fixed, still };
+}
+
 /* --------------------------------------------------------------- 旁白脚本 */
 
 /**
@@ -384,6 +490,13 @@ export function validateWords(words, dur) {
 
 const round3 = (x) => Math.round(x * 1000) / 1000;
 
+/**
+ * 一条句子在"批量那一遍"里最多被驱动调几次（见 `synthLine()` 的 `MAX_TRIES`）。
+ * 单独提出来是为了让**报告里的数字与代码里的数字是同一个**（从前报告写"重试 3 次"、
+ * 代码实际给 5 次，两边都没有共同的出处）。
+ */
+const MAX_TRIES_PER_LINE = 5;
+
 /** 同步睡一会儿（Node 没有同步 sleep；重试之间的退避要用它）。 */
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -391,7 +504,13 @@ function sleepSync(ms) {
 
 /**
  * 合成一句（文本 + 音色 + 语速 + 驱动都没变就跳过 —— 改一句只重合成那一句）。
- * @returns {{ dur: number, words: any[]|null, approx: boolean, cached: boolean, note?: string }}
+ *
+ * ⚠ **这一句失败不再抛错**（BACKLOG 1-6）：重试耗尽时返回 `failed: true` + `reason`，
+ * 由 `runSay()` 记进待补跑清单、让整批先跑完（详见 `runSay()` 上方的注释）。
+ * 成功时的返回对象与从前逐字一致（只多了一个 `failed: undefined`）。
+ *
+ * @returns {{ dur: number, words: any[]|null, approx: boolean, cached: boolean, note?: string,
+ *             failed?: boolean, reason?: string }}
  */
 export function synthLine(driver, { file, text, voice, rate, force = false }) {
   const stamp = `${file}.sha1`;
@@ -423,36 +542,63 @@ export function synthLine(driver, { file, text, voice, rate, force = false }) {
      *   0 字节 = 这次合成事实上失败了 —— 删掉重试，绝不把空文件当成功。
      */
     const okFile = (f) => { try { return existsSync(f) && statSync(f).size > 0; } catch { return false; } };
-    const attempt = (withWords, tries) => {
-      let out = null;
-      for (let i = 0; i < tries; i++) {
-        // 上一轮留下的 0 字节残骸先清掉：留着会让"文件在不在"这类判断失真
-        if (existsSync(file) && !okFile(file)) { try { rmSync(file, { force: true }); } catch { /* ignore */ } }
-        out = run(withWords
-          ? [...base, '--write-words', wordsFile, '--write-media', file]
-          : [...base, '--write-media', file]);
-        if (out.status === 0 && okFile(file)) return out;
-        if (i + 1 < tries) sleepSync(600 * (i + 1));
-      }
-      return out;
+    const { backoffMs } = retryConfig();
+    /**
+     * 这一句总共能试几次。
+     *
+     * ⚠ **额度是"每句"的，不是"每次调用 attempt"的**（2026-10-10 做批量容错时抓出来的）：
+     * 从前是 `attempt(true, 3)`，失败了再 `attempt(true, 2)` —— 后者内部又从 `i = 0` 数起，
+     * 于是一条句子偷偷拿到 3 + 2 = 5 次机会，而**外层完全看不出来**（日志与返回值都只反映结果）。
+     * 判据本来是"3 次"，实际是 5 次：这不只是数字对不上，它让"这句话到底重试了几次"这件事
+     * 无法从输出里读出来（写进报告的"每句自己重试 3 次"也就是假的）。
+     * 现在两种参数变体（带/不带 `--write-words`）**共用**这一个预算，谁先成功就结束。
+     */
+    const MAX_TRIES = MAX_TRIES_PER_LINE;
+    let r = null;
+    let used = 0;
+    const tryOnce = (withWords) => {
+      used++;
+      // 上一轮留下的 0 字节残骸先清掉：留着会让"文件在不在"这类判断失真
+      if (existsSync(file) && !okFile(file)) { try { rmSync(file, { force: true }); } catch { /* ignore */ } }
+      return run(withWords
+        ? [...base, '--write-words', wordsFile, '--write-media', file]
+        : [...base, '--write-media', file]);
     };
-
-    let r;
     if (driver.words) {
-      r = attempt(true, 3);
-      if (r.status !== 0) {
+      // 先"带词表"试 3 次
+      for (let i = 0; i < 3 && used < MAX_TRIES; i++) {
+        if (i > 0 && backoffMs > 0) sleepSync(backoffMs * i);
+        r = tryOnce(true);
+        if (r.status === 0 && okFile(file)) break;
+      }
+      if (!(r.status === 0 && okFile(file))) {
         // 驱动不认 --write-words（比如直接拿 edge-tts.exe 当驱动的用户）：退一步，别整个命令挂掉。
         // ⚠ 只有**明确是"不认识的选项"**才永久降级 —— 网络抖动之类的偶发失败不该让后面每句都丢掉词级时间戳。
         const both = `${r.stderr ?? ''}${r.stdout ?? ''}`;
         const unknownOpt = /unrecognized|unknown option|no such option|invalid option|Usage:/i.test(both);
-        r = attempt(false, 2);
-        if (r.status === 0) {
+        // ⚠ 偶发失败就**原样重试**（还是带 --write-words）：真的只是抖动的话，这一次多半能成功、
+        //   词级时间戳一点都不丢；退成"不带 --write-words"等于拿"丢掉这一句的词级时间戳"
+        //   去换一次重试，而 `driver.words` 还会被**永久**置 false（那条 notes 文案本来就自相矛盾：
+        //   写着"当偶发处理"，做的却是永久降级）。这条是 2026-10-10 做批量容错时抓出来的。
+        while (used < MAX_TRIES) {
+          if (backoffMs > 0) sleepSync(backoffMs * used);
+          r = tryOnce(!unknownOpt);
+          if (r.status === 0 && okFile(file)) break;
+        }
+        if (r.status === 0 && okFile(file)) {
           if (unknownOpt) driver.words = false;
-          else notes.push('这一句的 --write-words 一直失败（不是"选项不认识"，当偶发处理），只拿到了音频');
+          // 只有"驱动确实没写出词表"才记这条（下面 `else if (driver.words)` 那一支也会记，别记两遍）
+          else if (!existsSync(wordsFile)) {
+            notes.push('这一句的 --write-words 一直失败（不是"选项不认识"，当偶发处理），只拿到了音频');
+          }
         }
       }
     } else {
-      r = attempt(false, 3);
+      for (let i = 0; i < MAX_TRIES; i++) {
+        if (i > 0 && backoffMs > 0) sleepSync(backoffMs * i);
+        r = tryOnce(false);
+        if (r.status === 0 && okFile(file)) break;
+      }
     }
     if (r.status !== 0 || !okFile(file)) {
       const bytes = existsSync(file) ? statSync(file).size : -1;
@@ -460,7 +606,9 @@ export function synthLine(driver, { file, text, voice, rate, force = false }) {
         ? `exit ${r.status}`
         : `退出码 0 但音频只有 ${bytes} 字节（TTS 事实上没出声，已重试仍然如此）`;
       const tail = (r.stderr || r.stdout).trim().split(/\r?\n/).slice(-5).join('\n');
-      throw new Error(`TTS 合成失败（${why}）：${text}\n${tail}`);
+      // ⚠ 这里**不再 throw**（BACKLOG 1-6）：一句的失败由调用方（`runSay`）收进批量待补跑清单，
+      //   让整批先跑完。失败判定与文案一个字没变，只是换成了返回值。
+      return { dur: 0, words: null, approx: false, cached: false, failed: true, reason: `TTS 合成失败（${why}）：${text}\n${tail}` };
     }
     writeFileSync(stamp, want);
   }
@@ -598,7 +746,36 @@ export function solveTiming({ scenes, beat, overlap, tail, maxStretch }) {
 /* --------------------------------------------------------------- 主流程 */
 
 /**
+ * 「这一批没跑成」怎么让**命令行**退出码非 0。
+ *
+ * `scripts/anim.mjs` 的收尾是 `process.exit(process.exitCode ?? 0)`，所以这里设 `exitCode`
+ * 就能让 `say` 以 1 退出，**不需要改 CLI 那个文件**（它与这一层是分开维护的）。
+ * 返回值里的 `ok:false` / `failed[]` 是给调用方（`tools/test-say.mjs` 这类）的同一个信号的另一种形态。
+ * 用 try 包住：万一在别的宿主里 `process` 被冻住了，也不该把"报告失败"这件事本身变成崩溃。
+ */
+function warnExitCode(code = 1) {
+  try { process.exitCode = code; } catch { /* 拿不到 process 就算了，返回值里还有一份 */ }
+}
+
+/**
  * `anim say` 的实现。
+ *
+ * ## 失败-继续-补跑的状态机（BACKLOG 1-6）
+ *
+ * ```
+ *   逐句合成（第 1 遍）                     ← 失败**不抛**，记进 pending
+ *        │  pending 为空 ─────────────────────────────▶ 正常收尾（与从前逐字一致）
+ *        │  pending 非空
+ *        ▼
+ *   统一补跑（最多 retryConfig().passes 轮，每轮之间等 retryConfig().waitMs）
+ *        │ 修复的按**原顺序**回填（占位 null → 真句子）
+ *        ▼
+ *   pending 仍非空 ⇒ 逐句点名 + 不写表 + 退出码 1 + 返回 { ok:false, failed }
+ * ```
+ *
+ * 绝不允许的状态跃迁：失败 → `dur = 0` 的"成功空句"。守门在 `buildLineResult()`
+ * （见那里的注释与 `docs/BACKLOG.md` 1-6 的硬边界）。
+ *
  * @param {string} task
  * @param {{ taskDir: string, script?: string, voice?: string, rate?: string, bpm?: number,
  *           force?: boolean, dryRun?: boolean, tts?: string, tail?: number, maxStretch?: number,
@@ -623,41 +800,105 @@ export async function runSay(task, opts) {
   if (driver.warning) log(`⚠ ${driver.warning}`);
   log(`TTS 驱动 ${driver.argv.join(' ')}（${driver.from}${driver.words ? '，支持词级时间戳' : ''}）`);
 
-  // 1) 逐句合成（带缓存）
+  // 1) 逐句合成（带缓存）。⚠ **失败不再让整批停下**（BACKLOG 1-6）：
+  //    失败句先记进 `pending`，等整批跑完再统一补跑（补跑各轮见下）。
   const voDir = path.join(taskDir, 'audio', 'vo');
   const scenes = [];
+  const pending = [];
   let synthCount = 0;
   let wordsReal = 0;
   let wordsApprox = 0;
   let trimmedTotal = 0;
+  /** 补跑成功后需要回填的句子：`段名 → (第几句 → {line, result})` */
+  const repaired = new Map();
+  const noteRepair = (sc, i, line, result) => {
+    if (!repaired.has(sc)) repaired.set(sc, new Map());
+    repaired.get(sc).set(i, { line, result });
+  };
+
   /**
-   * 逐句的"但书"。⚠ **正常情况不产生 note**：词表只少了标点/空白是驱动的正常行为
-   * （判据在 `alignWords()`，BACKLOG 1-2），不再每句报一次。所以这里剩下的每一条
-   * 都是真要在意的东西（漏字、时间戳不合法…），**逐句点名，不再折叠**。
+   * 把"这一句最终的结果"折算进那几项统计（第一遍与补跑各轮都走它 —— 一份口径，不会两边算不一样）。
+   * ⚠ 统计只在**成功**时算：失败的那句不该算进"几句新合成"。
    */
-  const otherNotes = [];
+  const tally = (r) => {
+    if (!r.cached) synthCount++;
+    if (r.approx) wordsApprox++; else wordsReal++;
+    trimmedTotal += r.trimmed ?? 0;
+  };
+
   for (const sc of script.scenes) {
     const lines = [];
     for (const [i, l] of sc.lines.entries()) {
       const file = path.join(voDir, `${sc.id}-${i + 1}.mp3`);
-      const r = synthLine(driver, { file, text: l.text, voice, rate, force: opts.force });
-      if (!r.cached) synthCount++;
-      if (r.approx) wordsApprox++; else wordsReal++;
-      trimmedTotal += r.trimmed ?? 0;
-      if (r.note) otherNotes.push(`${sc.id} 第 ${i + 1} 句：${r.note}`);
-      lines.push({
-        cue: Number(l.cue),
-        text: l.text,
-        file: path.relative(taskDir, file).replace(/\\/g, '/'),
-        dur: round3(r.dur),
-        durFile: round3(r.durFile ?? r.dur),
-        words: r.words,
-        wordsApprox: r.approx,
-      });
+      const bail = [];
+      const got = collectLine({ sc, i, l, file, voice, rate, force: opts.force, driver, taskDir, log, bail });
+      if (got.ok) {
+        tally(got.result);
+        lines.push(got.line);
+      } else {
+        pending.push(bail[0]);
+        lines.push(null);   // 占位：补跑成功后按下标回填，顺序不会错
+      }
     }
     scenes.push({ id: sc.id, internal: Number(sc.internal), lines });
   }
-  for (const n of otherNotes) log(`  · ${n}`);
+
+  /**
+   * 第 1 遍跑完之后**只补跑失败的那几句**。
+   * 隔几秒再跑是有意义的：edge-tts 的失败常常是同一小段时间里的服务端抖动，
+   * 连着立刻重试大概率还是失败；整批跑完（几百句可能要几分钟）本身就已经把时间错开了。
+   */
+  let rounds = 0;
+  let retried = false;
+  const retry = retryConfig();                 // 现读一次，下面几步用同一份（免得中途被改得两边不一致）
+  if (pending.length && retry.passes > 0) {
+    retried = true;
+    log(`\n⚠ 这一轮有 ${pending.length} 句合成失败（重试已经用完）——整批先跑完了，`
+      + `现在对这几句做统一补跑（最多 ${retry.passes} 轮，每轮之间等 ${(retry.waitMs / 1000).toFixed(1)}s）：\n${formatPending(pending)}`);
+    for (let round = 1; round <= retry.passes && pending.length; round++) {
+      rounds = round;
+      if (retry.waitMs > 0) sleepSync(retry.waitMs);
+      const { fixed, still } = retryFailed({ pending, script, voice, rate, force: opts.force, driver, taskDir, log });
+      for (const f of fixed) {
+        noteRepair(f.sc, f.i, f.line, f.result);
+        log(`  ✓ 补跑成功：${f.sc} 第 ${f.i + 1} 句「${f.line.text}」`);
+      }
+      pending.length = 0;
+      pending.push(...still);
+      log(`· 第 ${round} 轮补跑：修好 ${fixed.length} 句，还剩 ${pending.length} 句`
+        + `${pending.length ? `\n${formatPending(pending)}` : ''}`);
+    }
+  }
+
+  // 把补跑修好的句子回填（顺序按原脚本，不是按修好的顺序）
+  let repairedTotal = 0;
+  for (const sc of script.scenes) {
+    const fixed = repaired.get(sc.id);
+    if (!fixed) continue;
+    const idx = script.scenes.findIndex((s) => s.id === sc.id);
+    for (const [i, v] of fixed) {
+      scenes[idx].lines[i] = v.line;
+      tally(v.result);
+      repairedTotal++;
+    }
+  }
+
+  // 仍有失败：一句都不许当成功 —— 逐句点名、**不写表**、退出码 1（硬边界见 buildLineResult()）
+  if (pending.length) {
+    log(`✗ ${pending.length} 句没合成出来（每句自己最多试 ${MAX_TRIES_PER_LINE} 次${retried ? `，整批跑完后又补跑 ${rounds} 轮` : '，补跑已关'}；`
+      + `这次补跑修好 ${repairedTotal} 句）`);
+    log(formatPending(pending));
+    log('\n· 时长表**没有**动（timing.json / timing.mjs / narration.json 保持原样）——'
+      + '失败的句子不许按 0 时长混进去，那会让 slot 静默算错、画面与旁白错位。');
+    log('· 已经合成好的句子都在缓存里：把上面那几句的问题处理掉，直接重跑同一条命令即可'
+      + '（成功的那几句不会再合成一遍）。');
+    warnExitCode();
+    return { ok: false, failed: pending, timing: null, narration: null, script, voice, rate, retryPasses: rounds };
+  }
+
+  // ⚠ 逐句的"但书"（词表只少了标点/空白这类**正常**行为不产生 note，判据在 `alignWords()`，
+  //   BACKLOG 1-2）在合成那一句时就打出来了 —— 剩下的每一条都是真要在意的东西
+  //   （漏字、时间戳不合法…），逐句点名、不折叠、也不攒到收尾。
   if (trimmedTotal > 0.3) {
     log(`· 每句尾巴上的静音已按"说到哪算到哪"处理：合计裁掉 ${trimmedTotal.toFixed(1)}s`
       + `（文件里还在，只是不算进这句的时长 —— 否则 slot 会被静音撑大）`);
@@ -742,7 +983,8 @@ export async function runSay(task, opts) {
   printTable(log, timing);
   const dup = solved.warnings.filter((w) => w.includes('叠句')).length;
   log(`\n时间表 audio/timing.json + audio/narration.json 已写出`
-    + `（${synthCount} 句新合成，${wordsReal} 句真词级时间戳 / ${wordsApprox} 句按字数近似）`);
+    + `（${synthCount} 句新合成${repairedTotal ? `，其中 ${repairedTotal} 句是收尾补跑救回来的` : ''}，`
+    + `${wordsReal} 句真词级时间戳 / ${wordsApprox} 句按字数近似）`);
   log(`说话 ${totalSpeech.toFixed(1)}s / ${solved.total.toFixed(1)}s = ${((totalSpeech / solved.total) * 100).toFixed(0)}%`
     + `${totalSpeech / solved.total > 0.8 ? '  ⚠ 超过 80%：观众喘不过气，考虑加留白或砍内容' : ''}`);
   log(`叠句 ${dup} 处；每段最后一句说完后至少留 ${tail}s 画面（判据见 docs/NARRATION.md §5）`);
@@ -755,7 +997,8 @@ export async function runSay(task, opts) {
     log(`    cut(${s.id}, { dur: timing.scenes[${i}].slot${ov}, handlesTransition: true, params: { stretch: timing.scenes[${i}].stretch } }),`);
   }
   log(`  ]),`);
-  return { ok: true, timing, narration, script, voice, rate };
+  // `retryPasses` 只在**真的走过补跑**时非 0（全成功时是 0）—— 给调用方一个"这一批救过句子"的信号
+  return { ok: true, timing, narration, script, voice, rate, retryPasses: repairedTotal ? rounds : 0, repaired: repairedTotal };
 }
 
 function printTable(log, timing) {

@@ -14,9 +14,26 @@
  *
  * ⚠ 它**故意**支持 `--write-words`：这样"驱动不支持词级时间戳"那条退化路径要用另一个
  * 开关来测（`--no-words`），而不是靠"碰巧没有"。
+ *
+ * ## 注入失败（`docs/BACKLOG.md` 1-6 的批量容错要用它）
+ *
+ * ```
+ *   node tools/stub-tts.mjs … --fail "<子串>" [--fail-cmd always|zeroremaining] [--fail-n 1] [--fail-state <文件>]
+ * ```
+ *
+ * `text` 里含 `--fail` 那个子串时按 `--fail-cmd` 失败：
+ *   · `always`（默认）—— 退出码 4（像 edge-tts 的网络抖动）；
+ *   · `zeroremaining` —— **退出码 0，却把输出写成 0 字节**（`IMPROVEMENTS-4.md` §6 A 那件事，
+ *     专门用来验"0 字节绝不当成功"）。
+ * `--fail-n N` 时**前 N 次**失败、之后**总是成功** —— 用它验"失败也继续、最后统一补跑"
+ * 那一步真的把句子救回来了。次数记在 `--fail-state`（默认 `<media>.stub-fails`）里，
+ * 因为驱动是**一次一进程**（`spawnSync`），进程内变量跨不过去。
+ *
+ * ⚠ 计数器按"文本"记，不按输出文件 —— 同样的句子在别处出现时共用一次计数，测试才可复现。
+ * 归零：删掉那个 `--fail-state` 文件（或换一个输出目录）。
  */
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -34,6 +51,40 @@ const rate = arg('--rate', '+0%');
 if (!text || !media) {
   console.error('用法：node tools/stub-tts.mjs --text 文本 --write-media out.mp3 [--write-words x.json] [--rate=-6%]');
   process.exit(2);
+}
+
+/**
+ * 失败注入（见文件头的说明）。
+ *
+ * ⚠ 计数器必须落到**盘上**：驱动是一句一进程（`runSay` 用 `spawnSync`），
+ * 进程内的变量跨不过去，而"前 N 次失败、之后成功"这件事只能靠跨进程的计数表达。
+ */
+const failPattern = arg('--fail');
+if (failPattern && String(text).includes(failPattern)) {
+  const mode = arg('--fail-cmd', 'always');
+  const limit = Number(arg('--fail-n', '0')) || 0;
+  const stateFile = arg('--fail-state', `${media}.stub-fails`);
+  let counts = {};
+  try { counts = JSON.parse(readFileSync(stateFile, 'utf8')); } catch { /* 没有/坏了都从 0 开始 */ }
+  const key = String(text);
+  // `seen` = **这一句之前已经被调用过几次**（也就是"这次是第几次"）。先读后写，
+  // 这样 `--fail-n 2` 的语义就是"第 1、2 次失败，第 3 次起成功"——一次不多、一次不少。
+  const seen = Number(counts[key] ?? 0);
+  counts[key] = seen + 1;
+  try {
+    mkdirSync(path.dirname(stateFile), { recursive: true });
+    writeFileSync(stateFile, JSON.stringify(counts, null, 1));
+  } catch { /* 计数写不动不致命：`--fail-n` 的语义退化成 always，测试会看出来 */ }
+  if (!limit || seen < limit) {
+    if (mode === 'zeroremaining') {
+      // 退出码 0、**0 字节** —— 最阴的那种失败（"0 字节当成功"这条判据就是为它写的）
+      mkdirSync(path.dirname(media), { recursive: true });
+      writeFileSync(media, Buffer.alloc(0));
+      process.exit(0);
+    }
+    console.error(`stub-tts: 注入失败（--fail ${JSON.stringify(failPattern)} 命中第 ${seen + 1} 次）`);
+    process.exit(4);
+  }
 }
 
 /** 权重：汉字/字母数字 1、标点 0.45、空白 0.2（≈ 0.18s / 0.08s / 0.04s 一个字） */
