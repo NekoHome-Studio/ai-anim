@@ -793,6 +793,8 @@ docs/history/      **归档**：已完成 / 已过期的东西，只作历史参
 tools/             诊断与回归脚本（probe-*.mjs / test-*.mjs / smoke-*.mjs），不参与出片
   regress-all.mjs  整份回归清单一条命令跑完（日志与汇总在 out/_regress/）
   lint-narration-dup.mjs  静态检查：**画面文字逐字复述旁白**（"两条字幕"的元凶），报 file:line
+  lint-fabricated-numbers.mjs 静态检查：**画面上的数字有没有出处**（查 tasks/<任务>/FACTS.md），报 file:line；
+                   只扫"数值显示位"，没有 FACTS.md 的任务安静跳过（1-22；见 §10.10）
   scene-harness.mjs  离线跑场：用假 ctx 把整条时间轴 render 一遍（抓未定义变量 / 确定性破例）
   test-style.mjs   风格包与字幕层的纯逻辑回归（含"不写 style 时像素不变"的底线断言）
   test-blocks.mjs  方块世界 kit 的纯 JS 回归（面朝向判据 / 深度排序 / 摄影机关键帧）
@@ -830,6 +832,17 @@ out/               渲染产物（图、mp4、日志；`out/_regress/` 是回归
    `node tools/lint-narration-dup.mjs <任务>` **零命中**（画面文字逐字复述旁白 = 观众说的"两条字幕"）；
    `check` 的输出里没有「压进字幕保留带」的警告。
    平台要软字幕就 `node scripts/anim.mjs subs <任务>`（**开过 captions 就别再烧一遍**）
+10. **画面上的数字必须有出处**（`docs/BACKLOG.md` 1-22；判据与边界见 `docs/FACTS-TEMPLATE.md` ★ 一节）。
+    **我们的画面全是代码算的，所以"编一个数字"的成本是零** —— 这一条只能靠硬规则 + 交付前自审：
+    **绝不在帧尺度上编造数字、增量、日期、计数**；数值显示位（`type.write` 的字符串、`chart` 的
+    `values`、`codeRow` 的文本、镜头模板的 `title`/`sub`/`footer`、旁白与字幕）里的字面量数字，
+    要么能在 `tasks/<任务>/FACTS.md` 找到出处，**要么写成占位符 `— figure —`**（槽位先渲染出来，
+    别先填一个"看起来合理"的数）。片子自己的编号（`WORKS 04`、`v0.1.2`）与示意读数
+    （计数器、延迟条）同样要登记 —— 一行话，换掉一次误报。
+    自查：`node tools/lint-fabricated-numbers.mjs <任务>` **零命中**
+    （`--slots` 复核它把哪些位置当成数值显示位，`--explain` 连找到出处的也打出来附行号）。
+    ⚠ 它只扫"数值显示位"：坐标 / 字号 / 时长 / 阈值 / 颜色分量 / 注释 / 算出来的数都不算。
+    ⚠ 没有 `FACTS.md` 的任务会被**安静跳过**并打印「没有事实表 ⇒ 这一项没验」—— 那是**没验**，不是通过
 
 ### 出问题时按这个顺序查
 
