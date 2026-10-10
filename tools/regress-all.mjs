@@ -61,7 +61,8 @@ const ITEMS = [
   //   与 `check` 的警告项（见 scripts/anim.mjs 里那段的注释）。
   { name: 'unit:style', cmd: ['tools/test-style.mjs'], note: '风格包 + 字幕层：合并规则 / 默认值一致 / "不写 style 时零变化"的底线（54 项）' },
   { name: 'unit:blocks', cmd: ['tools/test-blocks.mjs'], note: '方块世界 kit：面朝向判据 / 深度排序 / 世界切片 / 摄影机关键帧' },
-  { name: 'unit:check-skipped', cmd: ['tools/test-check-skipped.mjs'], note: '1-19「空≠干净」：skipped 收集/聚合/结论行 + 接线自检（24 项）' },
+  { name: 'unit:check-skipped', cmd: ['tools/test-check-skipped.mjs'], note: '1-19「空≠干净」：skipped 收集/聚合/结论行 + --quick 分档 + 接线自检（25 项）' },
+  { name: 'unit:notes', cmd: ['tools/test-notes.mjs'], note: '1-29 后半：NOTES.json 的读写/校验纯函数 + clean 保护判据（57 项）' },
   { name: 'harness:demo', cmd: ['tools/scene-harness.mjs', 'demo'], note: '离线跑场（假 ctx，不起 Chrome，0.1s）：未定义变量 / 确定性 / 文字出画' },
   { name: 'harness:style-sampler', cmd: ['tools/scene-harness.mjs', '_style-sampler'], note: '风格采样器：配置档 4 段 + 风格解析走通' },
 
@@ -120,7 +121,7 @@ const ITEMS = [
   { name: 'hashes:fidus', cmd: ['scripts/anim.mjs', 'hashes', 'fidus', '--baseline'], note: 'kit 重构后画面是否没变（基线已重存）', timeout: 30 * 60e3 },
   // promo 的基线是**每段一帧**（t=3/11/21/31/39/45，6 段各一帧，63.3 MB）：
   // 原来 `--save` 的默认四点（0/12/24/36）**漏掉了晶格隧道与落版两段**，改了引擎也照绿。
-  { name: 'hashes:promo', cmd: ['scripts/anim.mjs', 'hashes', 'promo', '--baseline'], note: '一镜到底整片：6 段各一帧逐像素比对（判据 max≤8 且 >16 为 0）', timeout: 30 * 60e3 },
+  { name: 'hashes:promo', cmd: ['scripts/anim.mjs', 'hashes', 'promo', '--baseline'], note: '一镜到底整片：6 段各一帧逐像素比对（判据**只有** negligible()：over16 === 0 且 mean < 0.002；日志里的 max / >16 / >32 只是给人看的读数）', timeout: 30 * 60e3 },
 ];
 
 function runItem(it) {
