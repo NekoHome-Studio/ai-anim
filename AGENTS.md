@@ -417,11 +417,15 @@ export default {
 | 参数 | 0 / 1 的含义 |
 |---|---|
 | `exposure` | 1 = 不变，2 = 亮一倍 |
-| `shoulder` | 软肩**起点**（0.85 胶片感，越高越硬） |
+| `shoulder` | 软肩**起点**（0.85 胶片感，越高越硬）。⚠ 实测输入 1.0 就输出 254、2.0 并到纯白 —— 高光多的画面靠它救不回来 |
+| `tonemap` | `'off'`（默认）/ `'agx'` / `'aces'`：高光滚降算子，与 `shoulder` **二选一**。`'agx'` 高光层次最好但霓虹去饱和，换它一般要配 `exposure: 0.75`（ACES 配 `0.85`）。标定夹具 `tasks/_post-lab/`（`still _post-lab -t 1.5,4.5,7.5` 出三种算子的同图对比） |
 | `bloom` / `halation` | 泛光/光晕**强度**，0 = 关 |
 | `bloomThreshold` | 进入泛光的亮度阈值，**越高越只有极亮处发光** |
 | `bloomRadius` | 泛光扩散半径**倍率**（1 = 基准，2 = 更糊更宽） |
+| `bloomKaris` | true = 亮部提取用 Karis 加权（默认 false）：只有**亚像素级**孤立高光才看得出，标定卡上无差别 |
 | `grain` / `vignette` | 颗粒幅度 / 暗角深度，0 = 关 |
+| `grainScale` | `'screen'`（默认，物理像素）/ `'design'`（逻辑分辨率）—— 出 4K 时用 `'design'`，颗粒才和 1080p 一样粗 |
+| `dither` | `'rpdf'`（默认）/ `'tpdf'` / `'off'`：输出前 8bit 抖动的分布，实测两者差别很小 |
 | `ca` | 色差强度，0 = 无 |
 | `saturation` / `contrast` | 1 = 不变 |
 | `lift` | 黑位**抬升量**（0 = 纯黑） |
@@ -770,7 +774,14 @@ docs/              ENGINE.md（引擎规格）、COOKBOOK.md（做法手册）�
                    PERF.md（**渲染性能实测与验收口径**：瓶颈、并行/NVENC、`-copyts`、verify 取时坑）、
                    FACTS-TEMPLATE.md（对外材料的事实出处模板）、
                    THREE.md（**第 3 种 3D：Three.js 镜头**——怎么用、三种背景合成模式、
-                   确定性铁律、投影贴标签、坑清单；写 3D 镜头先看这份）
+                   确定性铁律、投影贴标签、坑清单；写 3D 镜头先看这份）、
+                   REFERENCE-world-execute.md（**外部参考项目 `world.execute (me) ;` 的拆解**：
+                   画面/剪辑/播放器/数据管线四层，每条带 `文件:行号` 证据；§4 是可借鉴的机制、
+                   §6.5 是"它为什么好看"的判断。⚠ **它只记"别人怎么做"，待办一律以 BACKLOG.md 为准**）、
+                   REFERENCE-agent-video-projects.md（**另外三个外部项目的横向对比**：video-use /
+                   hyperframes / hypit 各自最值得抄的一件事、三处交叉印证的结论、统一的不建议清单；
+                   逐文件证据在三份 `REFERENCE-video-use.md` / `-hyperframes.md` / `-hypit.md` 里。
+                   ⚠ 同样是"只记别人怎么做"，**可执行条目在 BACKLOG.md §1.B**）
 docs/history/      **归档**：已完成 / 已过期的东西，只作历史参考，**不要当待办读**
                    （索引见 docs/history/README.md）：
                    HANDOFF.md（引擎早期的交接单）、HANDOFF-THREEJS.md（Three.js 接入提案）、

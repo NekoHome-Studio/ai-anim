@@ -45,6 +45,18 @@ import { Pass, RT } from './gl.js';
  * @property {number} radialBlur   径向模糊强度（向画面中心收缩）
  * @property {number[]} center     zoom / 径向模糊 / 色差的锚点，**逻辑像素、y 向下**（默认画面中心）。
  *                                 想做「绕某个元素推近」就把它设成那个元素的坐标。
+ * @property {'off'|'agx'|'aces'} [tonemap] 高光滚降算子（默认 `'off'` = 只用下面的 `shoulder` 软肩）。
+ *                                 `'agx'` 是 AgX（高光柔和滚降、亮霓虹不偏色，当前业界电影级默认）；
+ *                                 `'aces'` 是 Narkowicz 的 ACES 拟合（更饱和、对比更硬）。
+ *                                 ⚠ 开了之后 `shoulder` 不再生效（两者是同一位置的两种做法），
+ *                                 而且**会改变画面** —— 老任务要么不写，要么就得重存 `hashes` 基线。
+ * @property {'rpdf'|'tpdf'|'off'} [dither] 输出前的 8bit 抖动（默认 `'rpdf'` = 矩形分布，引擎一直以来的行为）。
+ *                                 `'tpdf'` 是三角分布（两个均匀分布相加），去色带更干净、噪声感更弱。
+ * @property {boolean} [bloomKaris] 泛光的亮部提取用 **Karis 加权平均**（`c/(1+luma(c))` 之后再还原）：
+ *                                 极亮的单个像素不会在降采样时"炸"成一个方块（fireflies）。默认 `false` = 现状。
+ * @property {'screen'|'design'} [grainScale] 颗粒撒在哪个栅格上（默认 `'screen'` = 物理像素，引擎一直以来的行为）。
+ *                                 `'design'` 按**逻辑分辨率**撒 —— `--scale 2` 出 4K 时颗粒大小与 1080p 一致，
+ *                                 跨分辨率观感才不变（否则 4K 的颗粒细一半）。
  */
 
 /** 默认后处理参数。场景返回的 post 对象会与它合并。 */
@@ -70,6 +82,10 @@ export const DEFAULT_POST = /** @type {PostParams} */ ({
   fade: 0,
   blur: 0,
   radialBlur: 0,
+  tonemap: 'off',
+  dither: 'rpdf',
+  bloomKaris: false,
+  grainScale: 'screen',
 });
 
 const LEVELS = 4;
@@ -118,23 +134,27 @@ export class Post {
     const pal = { palette: this.palette };
 
     // 亮部提取（带软阈值），同时降采样
+    // karis：采样时按 1/(1+luma) 加权、平均之后再还原 —— 一个极亮的孤立像素不会在降采样里
+    // 独占一个格子（"fireflies"），泛光里就不会出现随帧跳动的方块。
     this.pBright = new Pass(gl, /* glsl */ `
-      uniform sampler2D src; uniform vec2 texel; uniform float threshold; uniform float knee;
+      uniform sampler2D src; uniform vec2 texel; uniform float threshold; uniform float knee; uniform float karis;
+      vec3 tap(vec2 o) {
+        vec3 s = texture(src, vUv + texel * o).rgb;
+        return karis > 0.5 ? s / (1.0 + luma(s)) : s;
+      }
       void main() {
         vec2 t = texel;
         // 4 抽样降采样（顺便抗闪烁）
-        vec3 c = texture(src, vUv + t * vec2(-0.5, -0.5)).rgb
-               + texture(src, vUv + t * vec2( 0.5, -0.5)).rgb
-               + texture(src, vUv + t * vec2(-0.5,  0.5)).rgb
-               + texture(src, vUv + t * vec2( 0.5,  0.5)).rgb;
-        c *= 0.25;
+        vec3 c = (tap(vec2(-0.5, -0.5)) + tap(vec2(0.5, -0.5))
+                + tap(vec2(-0.5,  0.5)) + tap(vec2(0.5,  0.5))) * 0.25;
+        if (karis > 0.5) c = c / max(1.0 - luma(c), 1e-3);
         float l = max(c.r, max(c.g, c.b));
         // 软阈值：threshold 以下为 0，threshold+knee 以上全过
         float k = max(knee, 1e-4);
         float w = clamp((l - threshold) / k, 0.0, 1.0);
         w = w * w * (3.0 - 2.0 * w);
         fragColor = vec4(c * w, 1.0);
-      }`, { src: { value: null }, texel: [0, 0], threshold: 0.9, knee: 1.0 },
+      }`, { src: { value: null }, texel: [0, 0], threshold: 0.9, knee: 1.0, karis: 0 },
       { key: 'post_bright', blend: false, ...pal });
 
     // 可分离高斯模糊（9 抽样，sigma≈2.2）
@@ -179,11 +199,13 @@ export class Post {
     this.pFinal = new Pass(gl, /* glsl */ `
       uniform sampler2D src;
       uniform vec2  outSize;      // 物理像素
+      uniform vec2  designSize;   // 逻辑分辨率（grainScale 'design' 用）
       uniform float exposure, shoulder, ca, grain, vignette, saturation, contrast, lift, invert;
       uniform vec3  tint;
       uniform vec2  shake;
       uniform float zoom, flash, fade, blurAmt, radialBlur, seed;
       uniform vec2  center;
+      uniform float tonemap, ditherMode, grainDesign;
 
       float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
 
@@ -191,6 +213,31 @@ export class Post {
         // 软肩：k 以下线性，以上指数压回来，保住高光层次而不是硬切
         vec3 a = max(x - k, vec3(0.0));
         return min(x, vec3(k)) + (1.0 - exp(-a / max(1.0 - k, 1e-3))) * (1.0 - k);
+      }
+
+      // AgX（Benjamin Wrensch 的 minimal 版）：高光柔和滚降，亮霓虹不偏色。
+      // 输入是线性 HDR，输出是**线性显示值**（0..1），后面照常走 blitPass / readPixels 的 sRGB 编码。
+      vec3 agxContrast(vec3 x) {
+        vec3 x2 = x * x, x4 = x2 * x2;
+        return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+      }
+      vec3 tonemapAgX(vec3 v) {
+        const mat3 m = mat3(
+          0.842479062253094,  0.0423282422610123, 0.0423756549057051,
+          0.0784335999999992, 0.878468636469772,  0.0784336,
+          0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+        const mat3 mi = mat3(
+           1.19687900512017,   -0.0528968517574562, -0.0529716355144438,
+          -0.0980208811401368,  1.15190312990417,   -0.0980434501171241,
+          -0.0990297440797205, -0.0989611768448433,  1.15107367264116);
+        const float lo = -12.47393, hi = 4.026069;
+        v = clamp(log2(max(m * v, vec3(1e-10))), lo, hi);
+        v = agxContrast((v - lo) / (hi - lo));
+        return pow(max(mi * v, 0.0), vec3(2.2));
+      }
+      // Narkowicz 的 ACES 拟合：比 AgX 更饱和、对比更硬。
+      vec3 tonemapACES(vec3 x) {
+        return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
       }
 
       void main() {
@@ -223,7 +270,10 @@ export class Post {
         }
 
         c *= exposure;
-        c = shoulderCurve(c, shoulder);
+        // 高光滚降：三选一。默认 'off' 走原来的软肩（老任务一像素不变）
+        if (tonemap > 1.5)      c = tonemapACES(c);
+        else if (tonemap > 0.5) c = tonemapAgX(c);
+        else                    c = shoulderCurve(c, shoulder);
         c = mix(c, vec3(1.0) - c, invert);
 
         // 对比与饱和（围绕中灰 0.18）
@@ -239,24 +289,34 @@ export class Post {
         c += flash;
         c *= (1.0 - fade);
 
+        // 颗粒与抖动的栅格：'design' 按逻辑分辨率撒（--scale 2 出 4K 时颗粒不会细一半），
+        // 'screen' 按物理像素（引擎一直以来的行为）。
+        vec2 gp = grainDesign > 0.5 ? floor(vUv * designSize) : gl_FragCoord.xy;
+
         // 胶片颗粒：在显示空间加，暗部更明显（跟真胶片一样）
         if (grain > 0.0) {
-          float g = rand(gl_FragCoord.xy + seed) - 0.5;
+          float g = rand(gp + seed) - 0.5;
           float amp = grain * (1.0 - 0.65 * luma(toSRGB(max(c, vec3(0.0)))));
           c += g * amp;
         }
 
-        // 抖动：打散 8bit 量化带来的色带
-        c += (rand(gl_FragCoord.xy * 1.37 + seed * 1.7) - 0.5) / 255.0;
+        // 抖动：打散 8bit 量化带来的色带。
+        // tpdf = 两个均匀分布相加（三角分布），去色带的噪声感比 rpdf 更弱。
+        if (ditherMode > 1.5) {
+          c += (rand(gp * 1.37 + seed * 1.7) + rand(gp * 2.11 + seed * 3.1) - 1.0) / 255.0;
+        } else if (ditherMode > 0.5) {
+          c += (rand(gp * 1.37 + seed * 1.7) - 0.5) / 255.0;
+        }
 
         fragColor = vec4(max(c, vec3(0.0)), 1.0);
       }`,
       {
-        src: { value: null }, outSize: [1920, 1080],
+        src: { value: null }, outSize: [1920, 1080], designSize: [1920, 1080],
         exposure: 1, shoulder: 0.85, ca: 0, grain: 0.035, vignette: 0.35,
         saturation: 1, contrast: 1, lift: 0, invert: 0, tint: [1, 1, 1],
         shake: [0, 0], zoom: 1, flash: 0, fade: 0,
         blurAmt: 0, radialBlur: 0, seed: 0, center: [0.5, 0.5],
+        tonemap: 0, ditherMode: 1, grainDesign: 0,
       }, { key: 'post_final', blend: false, ...pal });
   }
 
@@ -278,6 +338,7 @@ export class Post {
     this.pBright.u.texel.value = [1 / gl.pw, 1 / gl.ph];
     this.pBright.u.threshold.value = p.bloomThreshold;
     this.pBright.u.knee.value = Math.max(0.15, p.bloomThreshold * 0.6);
+    this.pBright.u.karis.value = p.bloomKaris ? 1 : 0;
     this.pBright.render(gl, chain[0].bright);
 
     // halation 单独走一路：偏红、更宽
@@ -298,6 +359,7 @@ export class Post {
       this.pBright.u.texel.value = [1 / prev.a.w, 1 / prev.a.h];
       this.pBright.u.threshold.value = 0.0;   // 已经是亮部图，直接降采样
       this.pBright.u.knee.value = 1.0;
+      this.pBright.u.karis.value = 0;         // ⚠ Karis 只对第 0 级有意义，别让上一轮的值漏进来
       this.pBright.render(gl, cur.bright);
       this._blur(cur.bright, cur.a, cur.b, 1 / cur.a.w, 1 / cur.a.h, p.bloomRadius * (1 + i * 0.6));
     }
@@ -328,12 +390,16 @@ export class Post {
     const c = p.center;
     f.set({
       outSize: [gl.pw, gl.ph],
+      designSize: [gl.w, gl.h],
       exposure: p.exposure, shoulder: p.shoulder, ca: p.ca, grain: p.grain,
       vignette: p.vignette, saturation: p.saturation, contrast: p.contrast,
       lift: p.lift, invert: p.invert, tint: p.tint,
       shake: p.shake, zoom: p.zoom, flash: p.flash, fade: p.fade,
       blurAmt: p.blur ?? 0, radialBlur: p.radialBlur ?? 0,
       seed: seed % 1000,
+      tonemap: p.tonemap === 'agx' ? 1 : p.tonemap === 'aces' ? 2 : 0,
+      ditherMode: p.dither === 'tpdf' ? 2 : p.dither === 'off' ? 0 : 1,
+      grainDesign: p.grainScale === 'design' ? 1 : 0,
       center: Array.isArray(c) && c.length >= 2
         ? [c[0] / gl.w, 1 - c[1] / gl.h]
         : [0.5, 0.5],
