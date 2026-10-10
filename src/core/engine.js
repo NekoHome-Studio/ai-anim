@@ -136,6 +136,15 @@ export class Engine {
     this.lastSamples = 1;
     this.lastErrors = [];
     this.lastPost = { ...DEFAULT_POST };
+    /**
+     * 最近一帧的「非有限值」扫描结果（`render(t, { scanNf: true })` 才会填，否则 null）。
+     * 出片路径（`src/app.js` 的 `stream()`）读它并推一条 `diag: 'nonFinite'` —— 见 `_scanFrameNonFinite`。
+     * @type {null | { t: number, subT: number, idx: number, sub: number, id: string|null, ids: string[],
+     *                 w: number, h: number, pixels: number, nan: number, inf: number, huge: number,
+     *                 hugeMax: number, bad: number,
+     *                 first: null | { x: number, y: number, r: number, g: number, b: number, kind: string } }}
+     */
+    this.lastNonFinite = null;
   }
 
   /* ------------------------------------------------------------ 装载 */
@@ -632,7 +641,10 @@ export class Engine {
   /**
    * 渲染时刻 t 的一帧。
    * @param {number} t
-   * @param {{ samples?: number|'auto', shutter?: number, tol?: number, toScreen?: boolean, preview?: boolean, seeked?: boolean }} [opts]
+   * @param {{ samples?: number|'auto', shutter?: number, tol?: number, toScreen?: boolean, preview?: boolean,
+   *           seeked?: boolean, skipScene?: boolean, scanNf?: boolean }} [opts]
+   *   `scanNf: true` = 顺便扫这一帧的**浮点** RT 有没有 NaN / ±Inf（出片路径用，见 `_scanFrameNonFinite`）；
+   *   结果落在 `this.lastNonFinite`。默认 false：这条路径**不进每帧的渲染**。
    * @returns {{ samples: number, errors: number[] }}
    */
   render(t, opts = {}) {
@@ -644,11 +656,15 @@ export class Engine {
     let n = 1;
     let post = { ...DEFAULT_POST };
     let outTex = null;
+    const scanNf = !!opts.scanNf;
+    this.lastNonFinite = null;
     this.errors.length && (this.errors = this.errors.slice(-40));
 
     if (wanted === 1) {
       const r = this.composite(t, idx, 1 / this.fps, opts.seeked, { skipScene: opts.skipScene });
       outTex = r.tex; post = r.post;
+      // 单子帧这条路拿到的就是 t 这一帧本身，与 `check` 的 `probeNonFinite(t)` 判据完全一致
+      if (scanNf) this._scanFrameNonFinite(t, idx, r.tex, 1, t);
       this.lastSamples = 1;
       this.lastErrors = [];
     } else {
@@ -682,6 +698,9 @@ export class Engine {
         for (let i = from; i < to; i++) {
           const subT = Math.max(0, t + step * offsets[i]);
           const r = this.composite(subT, idx, step, opts.seeked && i === 0);
+          // 非有限值扫描只扫**第一个子帧**：池里的 RT 下一步就会被后面的子帧覆盖，
+          // 而累加 pass 会把 NaN/Inf 丢掉（`bad ? vec3(0.0) : c`）—— 只有这里还看得见它们。
+          if (scanNf && i === 0) this._scanFrameNonFinite(t, idx, r.tex, 0, subT);
           acc.u.src.value = { tex: r.tex.tex ?? r.tex, __tex: true };
           acc.render(this.gl, target, subT, 1 / this.fps);
           const d = Math.abs(offsets[i] - 0.125);
@@ -1021,6 +1040,31 @@ export class Engine {
       }
     }
     return out;
+  }
+
+  /**
+   * 扫**这一帧刚刚合成出来**的那张浮点 RT（出片路径用，`docs/BACKLOG.md` 1-4）。
+   *
+   * 与 `probeNonFinite(t)` 的唯一区别是**不额外渲一帧**：直接读当前帧的合成结果。
+   * 代价因此只剩「整屏 4 通道浮点回读 + 一次 JS 扫描」—— 1080p 约 8 MB 回读，
+   * 不重跑场景。出片时由 `render(t, { scanNf: true })` 每 N 帧调一次。
+   *
+   * ⚠ **多子帧时扫的是第一个子帧**（`offsets[0]` 那一张），不是恰好 t 的那一张：
+   *   合成用的池化 RT 会被下一个子帧当场覆盖，所以只能在它刚渲出来时读（`sub` 记 0）。
+   *   单子帧时 `sub` = 1、`subT` === t，与 `check` 的判据（在 t 处渲一个子帧）完全一致。
+   *   `subT` 会一起报出去：**段名按 `subT` 取**，否则紧挨切点的那一帧会被标成下一段
+   *   （`t` 落在新段、而扫到的那张图还是旧段的 —— 实测踩过：Inf 段被标成 NaN）。
+   *   判据本身与 `check` 共用 `scanNonFinite()`：NaN / ±Inf / 量级>5e4 分开数，给出首个坏像素。
+   *
+   * @param {number} t @param {number} idx @param {any} rt @param {number} sub @param {number} subT
+   */
+  _scanFrameNonFinite(t, idx, rt, sub, subT) {
+    // 只有浮点 RT 存得下 NaN/Inf；`composite()` 理论上总是还 RT 对象，这里仍然守一道
+    if (!rt || !rt.fbo) return null;
+    const scan = this.scanNonFinite(rt);
+    const ids = this.timeline.filter((i) => subT >= i.start && subT < i.end).map((i) => i.id);
+    this.lastNonFinite = { t, subT, idx, sub, id: ids[0] ?? null, ids, ...scan };
+    return this.lastNonFinite;
   }
 
   /**

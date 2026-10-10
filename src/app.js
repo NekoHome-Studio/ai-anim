@@ -414,6 +414,7 @@ function b64Bytes(b64) {
  *   frame(t, opts)             渲染并返回 RGBA（自下而上）
  *   png()                      把当前帧转 PNG
  *   stream({from,to,fps,ws,…}) 逐帧渲染 -> WebSocket 推给 ffmpeg（带背压）
+ *                              `scanNf` = 每几帧顺带扫一次这一帧的浮点 RT 有没有 NaN/±Inf
  *   readAt(t)                  在 t 处取像素统计（做自动检测用）
  */
 const api = {
@@ -586,6 +587,9 @@ const api = {
    *   · 页面发完就等 ack 文本消息，收到才继续（背压，防止 4K 撑爆内存）
    *   · CLI 只做「收帧 / 写 ffmpeg / 回 ack」三件事，绝不在回 ack 前调 page.evaluate，
    *     否则会和这里的同步渲染循环互相等待而死锁
+   *   · 文本消息（`'ack'` 之外）全是**诊断**，一律不参与帧计数：
+   *     `{diag:'renderError'}`（场景抛异常，P0-3）与 `{diag:'nonFinite'}`（这一帧的浮点 RT 里有
+   *     NaN/±Inf/量级爆掉，BACKLOG 1-4，由 `o.scanNf` 决定每几帧扫一次）
    */
   stream(o) {
     let ws;
@@ -629,15 +633,47 @@ const api = {
       } catch { /* 连接断了就算了，CLI 收尾还会问一次 */ }
     };
 
+    /**
+     * 出片路径的「非有限值」扫描（`docs/BACKLOG.md` 1-4）。
+     *
+     * 为什么扫描点必须在**页面里**：CLI 收到的是 NV12（GPU 上已经转成 8bit 的 YUV），
+     * 帧数据里**已经没有浮点信息** —— `Math.round(NaN * 255)` → 0、`Inf` → 255，
+     * 两者在显示上一模一样（实测两张 PNG 逐字节相同）。所以只能扫这一帧的 float RT。
+     *
+     * `o.scanNf` = 每多少帧扫一次（0 / 未给 = 不扫）。扫描由 `engine.render` 顺带做
+     * （`opts.scanNf`，见 `Engine._scanFrameNonFinite`）：**不额外渲一帧**，
+     * 只多一次整屏浮点回读 + 一次 JS 扫描。频率与实测代价见 `scripts/anim.mjs` 的 `--scan-nf`。
+     */
+    const scanNf = Math.max(0, Math.floor(Number(o.scanNf) || 0));
+
+    /** 把一次扫描结果推给 CLI（CLI 侧做聚合、限流与收尾汇总）。 */
+    const reportNonFinite = (nf) => {
+      if (!nf || !nf.bad) return;
+      try {
+        ws.send(JSON.stringify({
+          diag: 'nonFinite',
+          id: nf.id, ids: nf.ids, t: nf.t, subT: nf.subT, idx: nf.idx, sub: nf.sub,
+          nan: nf.nan, inf: nf.inf, huge: nf.huge, hugeMax: nf.hugeMax,
+          bad: nf.bad, pixels: nf.pixels,
+          first: nf.first ? { x: nf.first.x, y: nf.first.y, kind: nf.first.kind } : null,
+          atFrame: i,
+        }));
+      } catch { /* 连接断了就算了 */ }
+    };
+
     const step = () => {
       if (i >= total) { ws.send(JSON.stringify({ done: i })); return; }
       const t = o.from + i / o.fps;
+      // 每 scanNf 帧扫一次这一帧的浮点 RT（NaN / ±Inf）。第 0 帧必扫 —— 一开场就错的场景
+      // 不该等到第 30 帧才报出来。扫描由 render 顺带做，不额外渲一帧。
+      const doScan = scanNf > 0 && i % scanNf === 0;
       const r = engine.render(t, {
         samples: o.samples ?? 'auto',
         shutter: o.shutter ?? 0.5,
         tol: o.tol,
         toScreen: false,
         seeked: true,
+        scanNf: doScan,
       });
       const px = engine.readNV12();
       // 帧头 12 字节 = 子帧数 + 这一帧的 post.shake（逻辑像素，y 向下），其后是 **NV12** 像素
@@ -658,6 +694,8 @@ const api = {
       streamState.sent = i;
       streamState.readyState = ws.readyState;
       reportRenderErrors();
+      // 非有限值只在这一帧扫过时才可能非空（`engine.lastNonFinite` 每帧开头会清零）
+      if (doScan) reportNonFinite(engine.lastNonFinite);
       if (i % 30 === 0) setMsg(`渲染中 ${i}/${total} 帧 · ${r.samples} 子帧 · ${((100 * i) / total).toFixed(0)}%`);
       if (inflight < (o.inflight ?? 4)) { inflight++; step(); }
     };

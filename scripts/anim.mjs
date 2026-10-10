@@ -93,6 +93,13 @@
  *                               每个进程一个无头 Chrome，别超过物理核数。切点自动避开转场，
  *                               拼接走 MPEG-TS，不受 `-copyts` 那个坑影响）
  *   --force                     配合 --segments：忽略已存在的分块，全部重渲
+ *   --scan-nf[=N]               出片时每 N 帧扫一次**浮点缓冲**里的 NaN / ±Inf（默认 30；0 = 关掉）
+ *                               —— 「整屏白 / 单帧白多帧黑」那一类事故的唯一可靠判据（check 也在用它）：
+ *                               CLI 收到的是 NV12（8bit），帧里已经没有浮点信息，所以扫描挂在页面里、
+ *                               由 render 顺带做（**不额外渲一帧**，只多一次 1080p ≈ 8MB 的浮点回读）。
+ *                               实测代价：**一次扫描 ≈ 40ms**（1080p，与子帧数无关 —— 回读 + 扫 2M 像素）；
+ *                               每 30 帧一次 = +1.3ms/帧，demo 上实测 28.2s → 28.3s（+0.35%）
+ *   --nf-stop                   扫到非有限值就停下（默认只报告 —— "画面已经错了"和"要不要停"是两件事）
  *   --keep-raw x.nv12           把推给 ffmpeg 的原始 **NV12** 另存（绕开编码器做对照实验）
  *   --idle 300                  看门狗：「一直没有进展」多少秒才算卡死（等 ffmpeg 排水不算）
  *   --finalize 180              收尾时等 ffmpeg 写完 moov 的上限（秒）
@@ -126,6 +133,22 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
  * **改这里必须同时改 `src/app.js` 的 `stream().step()`** —— 两边是同一个协议。
  */
 const FRAME_HEADER = 12;
+/**
+ * `--scan-nf` 的默认值：**出片时每 N 帧扫一次浮点缓冲里的 NaN / ±Inf**（BACKLOG 1-4）。
+ *
+ * 30 这个数是**实测定的**（1080p / demo / 本机核显，2026-10-10）：
+ *   · 一次扫描的代价 = **40ms**，与这一帧有几个子帧无关（整屏 8MB 浮点回读 + JS 扫 2M 像素）：
+ *       samples=1：91.3 → 130.8 ms/帧（每帧都扫）；8 子帧：313 → 353 ms/帧（每帧都扫）
+ *   · 每 30 帧扫一次 ⇒ 平均 +1.3ms/帧。实测同一段 90 帧：28.2s → 28.3s（**+0.35%**）
+ *   · demo 整片 999 帧 / 14.3 分钟 ⇒ 34 次扫描 = 1.4s（+0.16%）
+ * 远低于「代价可观（>5%）」，所以**默认开着**：这一类事故以前只有 `check` 才发现得了，
+ * 而成片路径一旦写坏就是整段白/黑（实测夹具：NaN 段 `check` 报 3,110,400 像素）。
+ * 想让出片完全不受影响就 `--scan-nf 0`；想扫得更密就 `--scan-nf 1`（≈ +44% 帧时间，只适合短片段）。
+ *
+ * ⚠ 代价随**像素数**线性涨（4K = 4×，未实测）；极高帧率/极廉价场景下占比会更高，
+ *   那时用 `--scan-nf 0` 关掉或加大 N。
+ */
+const DEFAULT_SCAN_NF = 30;
 const argv = process.argv.slice(2);
 const cmd = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'help';
 const rest = cmd === 'help' ? argv : argv.slice(1);
@@ -3459,6 +3482,16 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
   const files = [];
   /** 本次**新渲**的块的逐帧 shake（跳过的块没有数据，所以只统计重新渲的那部分） */
   const shakeAll = [];
+  /**
+   * 非有限值扫描（BACKLOG 1-4）的**跨块汇总**：每块自己那份由 `renderToFile` 实时打过
+   * （每段第一条），这里把各块的命中合起来，在收尾给一次完整清单 ——
+   * 逐块各打一份会被"第 N 块 ✓"那几十行冲散。
+   * 只统计**本次新渲**的块；跳过的旧块没有数据（与 shake 同一个口径）。
+   * @type {any[]}
+   */
+  const nfAll = [];
+  let nfScannedAll = 0;
+  const scanNf = resolveScanNf();
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
     const file = path.join(segDir, `part_${String(i).padStart(3, '0')}_${c.from.toFixed(2)}-${c.to.toFixed(2)}.mp4`);
@@ -3476,6 +3509,8 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
     const r = await renderToFile({
       info, out: file, from: c.from, to: c.to, fps, samples, shutter,
       withAudio: false, audioFile: null, quiet: true,
+      // 块号一路带到诊断里：`atFrame` 是**块内**帧号，不带块号会被读成整片帧号
+      chunk: `${i + 1}/${chunks.length}`,
     });
     if (r.frames < expect) {
       try { rmSync(file, { force: true }); } catch { /* ignore */ }
@@ -3538,6 +3573,9 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
     log(`         ✓ ${r.frames} 帧，${(r.elapsed / 1000).toFixed(1)}s`);
     files.push({ file, expect });
     if (r.shakeSeq?.length) shakeAll.push(...r.shakeSeq);
+    // 非有限值：带上块号，收尾汇总里能直接定位到是哪一块（哪一段）
+    for (const h of r.nonFinite ?? []) nfAll.push({ ...h, chunk: `${i + 1}/${chunks.length}` });
+    nfScannedAll += r.nfScanned ?? 0;
   }
 
   // concat 拼接（先转成统一的 ts 再拼，避免不同 moov 结构拼不上）
@@ -3610,12 +3648,14 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
   log(`\n✓ ${path.relative(ROOT, out)}`);
   log(`  ${frames} 帧（${chunks.length} 块拼接，ffprobe 复核通过），用时 ${((Date.now() - segStart) / 1000).toFixed(1)}s`);
   log(`  文件大小 ${(st.size / 1048576).toFixed(1)} MB`);
+  // 非有限值扫描的跨块汇总（BACKLOG 1-4）：只报告、不删产物
+  reportNonFinite(nfAll, { scanNf, scanned: nfScannedAll, what: '（分块）' });
   // `--segments` 才是中间产物的**大头**（optifine 那次 11.2 GB），而这一段以前从不提示清理
   // （`docs/IMPROVEMENTS-4.md` §6 E：报告里只有直播路径挂了它）。
   reportIntermediates(task, out);
   // 抖动守门（只对本次重新渲过的块有数据；跳过的旧块不计入）
   if (shakeAll.length) reportShake(analyzeShake(shakeAll, { fps, checkTail: to >= info.duration - 1e-6 }), task);
-  return { frames };
+  return { frames, nonFinite: nfAll };
 }
 
 /**
@@ -3794,6 +3834,18 @@ async function cmdVideo(short = false) {
       let removed = '';
       try { rmSync(out, { force: true }); removed = `已删除 ${path.relative(ROOT, out)}`; }
       catch { removed = `删除 ${path.relative(ROOT, out)} 失败，请手动删掉它`; }
+      // `--nf-stop` 是**故意**停的，不是断流：措辞必须分开，否则会被读成"页面崩了"
+      // （那一类根因的下一步是查 HMR / 查页面，方向完全不同）。
+      if (r.nfStopped) {
+        const d = r.nonFinite?.[0];
+        die(
+          `--nf-stop：扫到非有限值，第 ${frames}/${total} 帧就停下了，${removed}。\n` +
+          `  首个命中：[${d?.id ?? '?'}] ${d ? nonFiniteWhere(d) : ''} ← ⚠ ${d ? nonFiniteLine(d) : '(无)'}\n` +
+          `  这是**已知原因**（确定性）：同一份代码重跑会在同一帧停下。\n` +
+          `  下一步：① node scripts/anim.mjs check <任务>（点名段名与时刻）；\n` +
+          `          ② 修 shader 之后重跑；不想中断就**去掉 --nf-stop**（默认只报告、不停）。`,
+        );
+      }
       // ⚠ 措辞按「已知 / 未知」分开（`docs/BACKLOG.md` 1-3）：直播这一条路**没有可复用的块**
       //   —— 重跑就是整片重渲，而"渲染期间改了文件"/"页面崩了"这类根因是**确定性**的，
       //   不修就重跑＝白等一整片。所以这里只给"先做什么"。
@@ -3892,7 +3944,7 @@ function findAudio(task) {
 }
 
 /** 用给定的浏览器会话逐帧渲染，并通过 WebSocket 推给 ffmpeg。 */
-async function renderToFile({ info, out, from, to, fps, samples, shutter, withAudio, audioFile }) {
+async function renderToFile({ info, out, from, to, fps, samples, shutter, withAudio, audioFile, quiet, chunk }) {
   const pw = info.pw, ph = info.ph;
   const args = [
     '-y', '-loglevel', 'error',
@@ -4066,6 +4118,23 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
   let consecErrFrames = 0;
   const ERR_STOP_AFTER = Number(opt('err-stop', '5'));
 
+  /**
+   * 非有限值扫描（BACKLOG 1-4）：页面每 `scanNf` 帧扫一次那一帧的浮点 RT 并推一条
+   * `{diag:'nonFinite'}`。这里只收集 + 实时报第一条（同一段不刷屏），收尾交给 `reportNonFinite()`。
+   *
+   * ⚠ 这条诊断**绝不参与帧计数**：文本消息在下面的 `if (!isBinary)` 分支里就被吃掉了。
+   */
+  const scanNf = resolveScanNf();
+  /** @type {any[]} */
+  const nfHits = [];
+  const nfWarned = new Set();
+  /** 扫到就停（显式开关；默认只报告） */
+  const nfStop = flag('nf-stop');
+  let nfStopped = false;
+  if (scanNf > 0 && !quiet) {
+    log(`  · 非有限值扫描：每 ${scanNf} 帧 1 帧（--scan-nf 0 关掉；--nf-stop 扫到就停）`);
+  }
+
   // 页面每帧：帧头 4 字节 = 子帧数，其后是 RGBA。收满或断连就结束。
   wss.on('connection', (ws) => {
     client = ws;
@@ -4089,10 +4158,37 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
               warn(`    用 node scripts/anim.mjs check <任务> 复现，或 still --only ${d.id} -t ${Number(d.t).toFixed(2)} 看图。`);
               finish();
             }
+          } else if (d && d.diag === 'nonFinite') {
+            // 出片路径的「整屏白 / 单帧白多帧黑」判据（BACKLOG 1-4）：只报告，默认不停。
+            nfHits.push(d);
+            // 实时只报**每一段的第一条**：一个 shader 写坏了通常是整段整段地坏，
+            // 每帧都打一遍会把几十行的进度日志淹掉（要完整清单看收尾汇总）。
+            // 分块渲染时带上块号：`atFrame` 是**块内**帧号，不带块号会被读成整片帧号。
+            const key = d.id ?? '(未知段)';
+            if (!nfWarned.has(key) && nfWarned.size < 6) {
+              nfWarned.add(key);
+              warnNonFiniteHit(d, chunk ? `[${chunk}] ` : '');
+            }
+            bump(`非有限值（${key} t=${Number(d.t).toFixed(2)}s）`);
+            if (nfStop && !finished) {
+              nfStopped = true;
+              warn(`\n  ✗ --nf-stop：扫到非有限值就停下（[${key}] ${nonFiniteWhere(d)}）。`);
+              warn(`    这一段的画面已经错了，继续渲下去只是把错帧多写几百帧进产物。`);
+              finish();
+            }
           }
         } catch { /* 不是 JSON 就忽略（'ack' 之类） */ }
         return;
       }
+      /**
+       * ⚠ 提前收工之后还可能收到几帧 —— `--nf-stop` / 连续场景异常 / 看门狗都会在
+       * `frames < total` 时收工，而页面是「发一帧等一个 ack」的流水线（`inflight` 默认 4），
+       * 那时**已经有几帧在路上**。等它们到达时 ffmpeg 的 stdin 可能已经 `end()` 了，
+       * 再 `write()` 会抛 `ERR_STREAM_WRITE_AFTER_END`：**整个进程崩掉**，栈里只有 streams
+       * 内部帧，看不出真正的原因，连收尾要打印的那句话都打不出来（实测踩到）。
+       * 这些帧**不计数也不写**：产物本来就要删掉，计进去只会让人以为"帧数是齐的"。
+       */
+      if (finished || stdinClosed) return;
       frames++;
       consecErrFrames = 0;
       bump(`收到第 ${frames} 帧`);
@@ -4215,6 +4311,8 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
   }, {
     from, to, fps, ws: wsUrl,
     samples: samples === 'auto' ? 'auto' : Number(samples), shutter, inflight: Number(opt('inflight', '4')),
+    // 非有限值扫描的频率交给页面（页面按帧号决定扫哪几帧，见 src/app.js 的 stream()）
+    scanNf,
   });
   if (started.err) die(`无法启动推流：${started.err}`);
   log(`· 推流参数已下发 → ${wsUrl}（共 ${total} 帧）`);
@@ -4261,10 +4359,21 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
   const shake = shakeSeq.length
     ? analyzeShake(shakeSeq, { fps, from, checkTail: to >= (info.duration ?? to) - 1e-6 })
     : null;
+  // 非有限值：实时那条已经在收到时就打过了（每段第一条），这里给**完整汇总**
+  // （扫了几帧 / 命中几帧 / 哪几段）。分块渲染时由 renderSegments 汇总（quiet）。
+  if (!quiet) {
+    reportNonFinite(nfHits, { scanNf, scanned: scanNf > 0 ? Math.ceil(frames / scanNf) : 0 });
+  }
   return {
     code, frames, samplesHist: hist, elapsed: Date.now() - t0,
     total, stalled: frames < total, everConnected, ffBlocked, maxBlockedMs,
     exitSignal: ffExitSignal, progressWhy, renderErrors,
+    /** 出片期间扫到的非有限值（`--scan-nf`，BACKLOG 1-4）；空数组 = 扫过、干净 */
+    nonFinite: nfHits,
+    /** 扫了几帧（0 = 没扫 —— 注意「没扫」≠「干净」，与 BACKLOG 1-19 同一个口径） */
+    nfScanned: scanNf > 0 ? Math.ceil(frames / scanNf) : 0,
+    /** `--nf-stop` 扫到非有限值而提前停下 */
+    nfStopped,
     /** 这一段的 `post.shake` 统计（见 scripts/lib/shake.mjs）；没有帧时为 null */
     shake,
     /** 原始逐帧 shake（分块渲染要靠它把各块接起来算整片）；调用方不关心 */
@@ -4339,6 +4448,108 @@ function knownCauseHeadline(kind) {
     return '这是**已知原因**（确定性）：画面渲染到一半停了（断流/崩溃），同一份代码、同样的环境重跑会停在同一个地方。';
   }
   return '这条不匹配任何已知的确定性根因，可能是瞬时的（磁盘满 / 内存耗尽 / 被外部中断 / GPU 掉线）。';
+}
+
+/* ------------------------------------------------ 出片路径的非有限值扫描（BACKLOG 1-4） */
+
+/**
+ * `--scan-nf[=N]` 的解析：**每 N 帧扫一次这一帧的浮点 RT**。
+ *
+ *   `--scan-nf`      不跟数字 → 默认频率（`DEFAULT_SCAN_NF`，实测定的）
+ *   `--scan-nf 1`    每帧都扫（量代价用；出片太慢）
+ *   `--scan-nf 0`    关掉（不扫就是不扫，一个字都不多打）
+ *
+ * ⚠ 不能直接用 `opt('scan-nf', …)`：裸 `--scan-nf`（后面跟的是别的开关）时
+ *   `opt()` 会把下一个参数当成频率，`Number('--samples')` = NaN 一路传下去 →
+ *   页面侧 `i % NaN === 0` 恒为 false ⇒ **静默不扫**（这正是 1-19「空 ≠ 干净」那一类坏法）。
+ */
+function resolveScanNf() {
+  const i = rest.indexOf('--scan-nf');
+  if (i < 0) return DEFAULT_SCAN_NF;
+  const v = rest[i + 1];
+  if (v === undefined || v.startsWith('-')) return DEFAULT_SCAN_NF;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(1, Math.floor(n));
+}
+
+/**
+ * `check` 与出片路径**共用同一句话**（措辞照抄 `cmdCheck`，别发明新词）：
+ *
+ *   ← ⚠ 非有限值：NaN n / Inf n / 量级>5e4 n 像素（首个坏像素 x=… y=…，kind）
+ */
+function nonFiniteLine(d) {
+  const where = d.first ? `（首个坏像素 x=${d.first.x} y=${d.first.y}，${d.first.kind}）` : '';
+  return `非有限值：NaN ${d.nan} / Inf ${d.inf} / 量级>5e4 ${d.huge} 像素${where}`;
+}
+
+/** 「这是哪一类根因」——与 `check` 的同一条一字不差。 */
+function nonFiniteWhy() {
+  return [
+    '这是「整屏白 / 单帧白多帧黑」的一类根因：shader 里除了 0、开了 normalize(0)',
+    '（多半是相机 uniform 全 0）或 pow(0, 负数）。见 node tools/probe-raymarch.mjs',
+  ];
+}
+
+/**
+ * 「第几帧、什么时刻」那一小段（实时与汇总共用）。
+ *
+ * ⚠ 多子帧时扫的是**这一帧的第一个子帧**（`subT`），段名按 `subT` 取 —— 紧挨切点的那一帧
+ *   会出现 `t` 在新段、而扫到的图还是旧段的（实测踩过：Inf 段被标成 NaN）。
+ *   所以只要 `subT ≠ t` 就把两个时刻都写出来，别让读者以为报的是恰好 t 的那张图。
+ */
+function nonFiniteWhere(d) {
+  const t = Number(d.t);
+  const subT = d.subT == null ? t : Number(d.subT);
+  const head = `t=${t.toFixed(3)}s（第 ${d.atFrame} 帧`;
+  return Math.abs(subT - t) > 5e-4
+    ? `${head}，扫的是这一帧的第一个子帧 t=${subT.toFixed(3)}s）`
+    : `${head}）`;
+}
+
+/** 实时那条警告（每段只报第一条，避免刷屏）。`prefix` 给分块渲染带块号用。 */
+function warnNonFiniteHit(d, prefix = '') {
+  const id = d.id ?? '(未知段)';
+  warn(`\n  ⚠ ${prefix}[${id}] ${nonFiniteWhere(d)}`);
+  warn(`     ← ⚠ ${nonFiniteLine(d)}`);
+  for (const l of nonFiniteWhy()) warn(`     ${l}`);
+}
+
+/**
+ * 收尾汇总：出片期间扫到的非有限值。
+ *
+ * 为什么默认**只报告、不中断也不删产物**：「画面已经错了」和「要不要停下」是两件事
+ * （12 分钟的片子扫到一处 NaN 就整条停掉、把已经渲好的几百帧丢掉，代价比这一处错更大）。
+ * 想中断就显式加 `--nf-stop`。
+ *
+ * @param {any[]} hits 页面推来的 `diag: 'nonFinite'` 消息（可能来自多个分块）
+ * @param {{ scanNf?: number, scanned?: number, what?: string, quiet?: boolean }} [opts]
+ */
+function reportNonFinite(hits, opts = {}) {
+  if (!hits || !hits.length) return;
+  // 按段聚合：同一段报第一条就够（一个 shader 写坏了一路，通常是整段整段地坏）
+  const bySeg = new Map();
+  for (const h of hits) {
+    const key = h.id ?? '(未知段)';
+    const cur = bySeg.get(key);
+    if (cur) { cur.n++; continue; }
+    bySeg.set(key, { first: h, n: 1 });
+  }
+  const head = opts.what ? `出片期间${opts.what}` : '出片期间';
+  warn(`\n⚠ ${head}扫到非有限值（NaN / ±Inf）—— 这些帧的画面已经错了：`);
+  for (const [id, g] of [...bySeg.entries()].slice(0, 8)) {
+    const d = g.first;
+    warn(`  · ${d.chunk ? `[${d.chunk}] ` : ''}[${id}] ${nonFiniteWhere(d)}  ← ⚠ ${nonFiniteLine(d)}`
+      + (g.n > 1 ? `  （这一段共扫到 ${g.n} 帧）` : ''));
+  }
+  if (bySeg.size > 8) warn(`  · …还有 ${bySeg.size - 8} 段`);
+  const freq = opts.scanNf ? `每 ${opts.scanNf} 帧扫 1 帧` : '（频率未知）';
+  warn(`  扫描频率 ${freq}${opts.scanned ? `（共扫了 ${opts.scanned} 帧），命中 ${hits.length} 帧` : `，命中 ${hits.length} 帧`}`);
+  for (const l of nonFiniteWhy()) warn(`  ${l}`);
+  warn(`  下一步：① node scripts/anim.mjs check <任务>（会点名段名与时刻，并再扫一次）；`);
+  warn(`          ② node scripts/anim.mjs still <任务> -t <时刻> --only <段> 看一眼那一帧；`);
+  warn(`          ③ 画面是**单帧白 / 成片黑**就正是这一类：多子帧那条路会把 NaN/Inf 丢掉。`);
+  warn(`  （默认只报告、不中断：产物已保留 —— 要不要重出由你决定；想渲染时就停下用 --nf-stop）`);
 }
 
 async function cmdPerf() {
@@ -4933,6 +5144,11 @@ async function renderParallel({ task, info, out, from, to, fps, samples, shutter
       const v = opt(k, null);
       if (v != null) args.push(`--${k}`, String(v));
     }
+    // ⚠ `--scan-nf` 可能是不带数字的裸开关：`opt('scan-nf')` 会把下一个参数（比如 `--from`）
+    //   当成频率传给子进程。这里走同一个解析函数，把**解析之后**的值传下去 ——
+    //   与单进程那条路（`renderToFile` 里的 `resolveScanNf()`）口径一致，子进程各扫各的那一段。
+    args.push('--scan-nf', String(resolveScanNf()));
+    if (flag('nf-stop')) args.push('--nf-stop');
     const fd = openSync(logFile, 'w');
     const p = spawn(process.execPath, args, { cwd: ROOT, stdio: ['ignore', fd, fd] });
     children.add(p);
