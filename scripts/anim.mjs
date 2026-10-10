@@ -222,8 +222,21 @@ function firstLine(x) {
 function formatSkipped(skipped) {
   const list = Array.isArray(skipped) ? skipped : [];
   if (!list.length) return ['skipped: 无（这次体检的每一项审计都真的跑了）'];
+  /**
+   * 按 **what** 聚合（同一件事失败 N 次只占一行，写出 ×N）。
+   * 为什么必须聚合：多子帧路径与非有限值扫描是**每个采样点**各一次 —— 页面一崩就是
+   * 「13 段 × 3 点 × 2 项」几十条，一段 60 行的 skipped 没人会读，等于又变回"少打一行"。
+   * 聚合只动显示，不动收集（`why` 保留第一次的原文，多行内联提示照旧带着时刻）。
+   */
+  const groups = new Map();
+  for (const s of list) {
+    const key = String(s?.what ?? '?');
+    const g = groups.get(key);
+    if (g) g.n++;
+    else groups.set(key, { n: 1, why: String(s?.why ?? '(没有说明)') });
+  }
   const lines = [`skipped: ${list.length} 项没跑 —— 这些地方**没有验过**，不要当成通过：`];
-  for (const s of list) lines.push(`  · ${s.what}：${s.why}`);
+  for (const [what, g] of groups) lines.push(`  · ${what}${g.n > 1 ? ` ×${g.n}` : ''}：${g.why}`);
   lines.push('  （想让"有跳过"变成非零退出：加 --strict —— 默认不改退出码，见 docs/BACKLOG.md 1-19）');
   return lines;
 }
@@ -1316,7 +1329,9 @@ async function cmdCheck() {
             // 页面失联（HMR 重载 / 崩了）是**致命**诊断，别降级成"多子帧不可用"混过去
             if (err && err.readable) throw err;
             multiNote = `  ← ⚠ 多子帧这一条路径**没跑**（skipped）：${firstLine(err)}`;
-            pushSkipped(skipped, `多子帧路径（${it.id} t=${t.toFixed(2)}s）`, firstLine(err));
+            // ⚠ what 里**不带时刻**：时刻跟着这一行的内联提示，而 skipped 那一段是按 what
+            //   聚合的（带时刻就聚合不起来 —— 页面一崩就是几十行，等于又变回"少打一行"）。
+            pushSkipped(skipped, '多子帧路径（成片走的那条）', `[${it.id} t=${t.toFixed(2)}s] ${firstLine(err)}`);
           }
         }
         const one = await statsAt(t, { samples: 1 });
@@ -1345,7 +1360,7 @@ async function cmdCheck() {
           // 「空 ≠ 干净」（1-19）：这一项**没跑成**（不是"扫了、没扫到"）。以前它静默消失，
           // 于是"整屏白 = NaN/Inf"这条最贵的诊断会在最需要它的时候不见踪影。
           warn(`      ← ⚠ 非有限值扫描**没跑**（skipped）：${nf.error}`);
-          pushSkipped(skipped, `非有限值扫描（${it.id} t=${t.toFixed(2)}s）`, nf.error);
+          pushSkipped(skipped, '非有限值扫描（NaN/Inf）', `[${it.id} t=${t.toFixed(2)}s] ${nf.error}`);
         }
         if (nf && !nf.error && nf.bad > 0) {
           const pct = ((nf.bad / Math.max(1, nf.pixels)) * 100).toFixed(1);
