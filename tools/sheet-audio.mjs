@@ -99,13 +99,14 @@ const HELP = `sheet-audio —— 把「抽帧接触表 + 波形 + 静音带 + �
                      或直接给一个音频文件路径。**拿错轨会得到"对不上但不报错"的图**，
                      所以选了哪条会写在图上（标题下面的 AUDIO 行）。
                      默认：有 narration.json 就取 vo（只有它句间是真静音，静音带才有意义），
-                     没有就取 mix。sodium 实测：vo 有 43 条静音带，mix **一条都没有**。
+                     没有就取 mix。sodium 实测（整片 246s / 门限 -45dB / ≥0.4s）：
+                     **vo 75 条静音带、mix 4 条、music 2 条**；optifine：vo 85 / mix 2。
   --list-tracks      列出候选音轨（时长 + 静音带条数 + 噪声底）然后退出
   --sr <hz>          解码采样率（默认 22050）
   --silence-db <db>  静音判据（默认 -45，与 scripts/lib/media.mjs 的 probeSpeechEnd 同口径）。
                      \`vo\` 轨句间是数字静音（≤-120dB），-45 一次就成；
                      有些片子的 vo 轨是**混过**的（beast 那条），句间只掉到 -30 上下，
-                     那就调高到 -32；**没有静音带时工具会把该轨的 p90 打出来并给建议值**
+                     那就调高到 -32；**没有静音带时工具会把窗口内的 p1 打出来并给建议值**
   --min-silence <秒> 多长才算一条静音带（默认 0.4）
   --label-min <秒>   词标签最短时长（默认 0.05，照抄对方 \`if (we - ws) < 0.05: continue\`）
   --label-gap <px>   相邻词标签的最小横向间距（默认 28，照抄对方 \`if cx - last_label_x < 28\`）
