@@ -123,6 +123,16 @@ slot     = ceil(max(internal*stretch, max_i(cue_i*stretch + dur_i)) + TAIL 到�
   `audio/<任务>-vo.mp3`（只有旁白的一条轨）。
   `anim say` 还会打印一张时长表、叠句警告、`MAX_STRETCH` 顶到上限的警告、说话占比，
   以及可以直接粘进 `task.config.mjs` 的 `cut(...)` 片段。
+- **一句失败不让整批白跑**（`docs/BACKLOG.md` 1-6）。逐句合成的偶发失败（edge-tts 的服务端抖动、
+  或"退出码 0 却写出 0 字节"）现在是**失败也继续**：
+  ① 第 1 遍逐句合成，失败的句子先记进待补跑清单，**其余照常合成完**；
+  ② 整批跑完之后**只补跑清单里那几句**（默认隔 2s、最多 2 轮；缓存会把已成功的一句不落地跳过）；
+  ③ 收尾仍有失败 ⇒ **逐句点名**（段名 + 第几句 + 原句 + 原因）、**不写** `timing.{json,mjs}` 与
+  `narration.json`、命令以 **1** 退出。已经合成好的句子留在缓存里，把问题处理掉直接重跑同一条命令
+  即可（成功的那几句不会再合成一遍）。
+  ⚠ **失败的句子绝不许按 `dur = 0` 混进时长表** —— 那会让 `solveTiming()` 把 slot 静默算错、
+  画面与旁白错位。守门在 `say.mjs` 的 `buildLineResult()`：`dur <= 0` / 非有限值一律当失败返回。
+  一条句子在批量那一遍总共最多试 `MAX_TRIES_PER_LINE`（5）次；这个数字与报告里印的是**同一个出处**。
 - `anim mix` 做三件事：按 `timing.json` 把每句摆到绝对时刻、用旁白**自己的包络**做闪避
   （默认说话时音乐剩 22% ≈ −13 dB，起音快释放慢）、归一化后输出 `audio/<任务>-mix.mp3`
   （外加一份 wav 备查）；打印说话占比、闪避深度、以及该写进 `task.config.mjs` 的那行
@@ -138,7 +148,10 @@ slot     = ceil(max(internal*stretch, max_i(cue_i*stretch + dur_i)) + TAIL 到�
   （`timing.json` 里那些词的 `approx: true`）—— 不许静默。
 - 离线回归：`node tools/test-say.mjs`（用 `tools/stub-tts.mjs` 这个假驱动，时长可算 →
   不需要联网、不需要 GPU；夹具任务建在**系统临时目录** `%TEMP%/anim-saytest`，
-  所以它跟正在跑的渲染互不干扰）。真 TTS 通电：`node tools/probe-tts-edge.mjs`（要联网）。
+  所以它跟正在跑的渲染互不干扰）。**批量容错也在这一份里验**：靠 `stub-tts.mjs` 的
+  `--fail "<子串>" [--fail-cmd always|zeroremaining] [--fail-n N]` 注入失败
+  （`zeroremaining` = 退出码 0 却写 0 字节；`--fail-n N` = 前 N 次调用失败、之后成功）。
+  真 TTS 通电：`node tools/probe-tts-edge.mjs`（要联网）。
 - ⚠ **"换音色不用重渲画面"要说准**：与音色解耦的是**代码结构**（`slot`/`stretch` 落在 `timing.mjs` 里，
   场景代码一个字都不用改）；但如果新音色把某句念长了/短了，`slot` 就会变 → 段长变 → **片子要重出**。
   这不是 bug，是"镜头长度由旁白决定"的直接后果。
