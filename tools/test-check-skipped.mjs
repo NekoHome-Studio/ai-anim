@@ -307,4 +307,4 @@ t('源码自检：产物守门四处都走 gateFailureLines/decideGateFailure', 
 /* ------------------------------------------------------------------ 汇总 */
 
 console.log(cases.join('\n'));
-console.log(`\n✓ ${passed}/${passed} 条断言通过（node out/_staging/test-check-skipped.mjs）`);
+console.log(`\n✓ ${passed}/${passed} 条断言通过（node tools/test-check-skipped.mjs）`);
