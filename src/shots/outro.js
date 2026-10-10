@@ -95,3 +95,16 @@ outroShot.meta = {
     { name: 'signature', type: 'string', desc: '右下角签名（末尾的闪烁光标由代码加，别写进来）' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: []` 的依据：`render()` 只读 `f.lt` / `f.start` / `f.end` / `P`（`outro.js:30-36`）——
+ * 结尾压黑是 `post.fade` 按段内时间算的（`outro.js:67-75`），不需要任何外部输入。
+ * `outputs.visual = 'full-frame'` 的依据是 `gl.clear(ctx.out, …)` 那一笔（`outro.js:35`，§14.4）。
+ */
+outroShot.spec = {
+  params: { id: 'string', title: 'string', sub: 'string', signature: 'string' },
+  requires: [],
+  outputs: { visual: 'full-frame', handlesTransition: false },
+};

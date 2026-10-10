@@ -30,7 +30,24 @@
  * ```sh
  * node scripts/anim.mjs shots           # 列出全部模板
  * node scripts/anim.mjs shots chart     # 某个模板的全部参数与默认值
+ * node scripts/anim.mjs shots wave --json   # 机器可读的那份（含 spec：requires / outputs）
  * ```
+ *
+ * ## 声明式 spec（BACKLOG 1-21，契约在 `docs/ENGINE.md` §14.9）
+ *
+ * 每个工厂函数上挂着一份 **`spec`**：参数类型（`params`）、**依赖**（`requires`）、产出（`outputs`）。
+ * 它与 `.defaults` / `.meta` **并存、不互相替代**：
+ *
+ *   · `.defaults` 仍然是"什么都不传时的画面"的唯一来源（§14.1）；
+ *   · `.meta` 仍然是给人看的参数说明（`desc`）与顺序；
+ *   · `.spec` 是**声明**：`params` 是参数类型的声明（`meta.params[].type` 是它的副本，
+ *     `tools/test-shots.mjs` 断言两者逐项相等），`requires` 是**依赖前置校验**读的那份事实
+ *     （`scripts/anim.mjs` 的 `cmdCheck`：用了 `requires: ['music']` 的模板却没配 `audio`，
+ *     会在**开浏览器之前**就报出来，而不是等出图发现全黑）。
+ *
+ * ⚠ 加 spec **不改任何调用签名、不改 defaults、不改绘制代码** —— 它只是把"以前写在散文里的事实"
+ *   变成可以被机器读的字段。没有 `spec` 的模板，`listShots()` 里**根本不会出现** `requires` / `outputs`
+ *   这两个键：读到"没有这个键"要理解成"还没声明过"，绝不能当成"不需要"。
  *
  * ## 边界（什么不该进这里）
  *
@@ -51,6 +68,26 @@ import { pulseShot } from './pulse.js';
 import { gridShot } from './grid.js';
 
 export { titleShot, chartShot, kineticShot, whipShot, outroShot, waveShot, pulseShot, gridShot };
+
+/**
+ * `spec.requires` 认得的**依赖令牌**（词表 = 契约的一部分）。
+ *
+ * `anim shots --json` 会把它作为顶层 `requireTokens` 原样带出去 —— 读的人（或读的机器）
+ * 不必去翻 `scripts/anim.mjs` 才知道 `'music'` 是什么意思。词表只许**加**新令牌，
+ * 不许改已有令牌的含义（老的读者会按这些串做判断）。
+ */
+export const SHOT_REQUIRES = {
+  music: '画面读 `ctx.music`（音频包络 / 真实打击事件 / 拍号）—— 任务要在 task.config.mjs 里配 `audio`',
+  analyze: '要有预计算好的音频分析 `tasks/<任务>/audio/<文件>.analysis.json`（`node scripts/anim.mjs analyze <任务>`）',
+  under: '画面读上一段的成帧 `ctx.under` —— 时间线上必须与上一段交叠（`overlap`），并让它自己处理转场',
+};
+
+/**
+ * `spec.outputs.visual` 的取值范围：
+ *   · `'full-frame'`  自己铺满整帧（§14.4），一个模板镜头就是一段完整画面；
+ *   · `'transition'`  转场镜头：它把上一段甩走，不能单独作为一段完整画面来看。
+ */
+export const SHOT_VISUALS = ['full-frame', 'transition'];
 
 /**
  * 模板名 → 工厂函数。
@@ -107,19 +144,33 @@ export function shot(name, opts = {}) {
  * 参数表来自每个模板自己的 `meta`，默认值来自它的 `defaults`（唯一来源，
  * 所以"文档里写的默认值"与"代码实际用的默认值"不可能对不上；
  * `tools/test-shots.mjs` 会断言两者的键集合完全相等）。
+ * **参数类型**以 `spec.params` 为准（没有 spec 时回落到 `meta.params[].type`）——
+ * 两份声明由 `tools/test-shots.mjs` 断言逐项相等，所以不可能各说各话。
+ *
+ * `requires` / `outputs` 来自模板的 `spec`（BACKLOG 1-21）：**没有 spec 的模板，
+ * 这两个键在返回的对象里根本不出现**（"缺字段 ≠ 不需要"，见 `docs/ENGINE.md` §14.9）。
  *
  * @returns {{ name: string, summary: string, notes: string,
- *             params: { name: string, type: string, desc: string, default: any }[] }[]}
+ *             params: { name: string, type: string, desc: string, default: any }[],
+ *             requires?: string[], outputs?: any }[]}
  */
 export function listShots() {
   return Object.entries(SHOTS).map(([name, factory]) => {
     const meta = /** @type {any} */ (factory).meta ?? {};
     const defaults = /** @type {any} */ (factory).defaults ?? {};
+    const spec = /** @type {any} */ (factory).spec ?? null;
     return {
       name,
       summary: meta.summary ?? '',
       notes: meta.notes ?? '',
-      params: (meta.params ?? []).map((p) => ({ ...p, default: defaults[p.name] })),
+      params: (meta.params ?? []).map((p) => ({
+        ...p,
+        type: spec?.params?.[p.name] ?? p.type,
+        default: defaults[p.name],
+      })),
+      // ⚠ 用"有 spec 才加键"而不是"没有就给个空数组"：后者会把"还没声明过"伪装成
+      //   "声明了、不需要任何东西" —— 那正是 §14.9 第 2 条读法要防的那种静默失真。
+      ...(spec ? { requires: spec.requires ?? [], outputs: spec.outputs ?? null } : {}),
     };
   });
 }

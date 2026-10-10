@@ -122,3 +122,20 @@ waveShot.meta = {
     { name: 'window', type: 'number', desc: '显示最近多少秒' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: ['music', 'analyze']` 的**依据是逐行代码**，不是散文：
+ *   · `music.rms[fi]` / `music.low[fi]` / `music.high[fi]`（`wave.js:53-56`）—— 包络数组；
+ *   · `music.hits('kick', t - 2.2, t)`（`wave.js:65`）—— 真实打击事件；
+ *   · `music.bpm.toFixed(1)`（`wave.js:78`）。
+ * `ctx.music` 是引擎给的 `SILENT`（空音乐：单帧 0 包络 + 空事件表）时这些都不报错，
+ * 画面只会是"一屏很暗的短线"—— 所以这件事必须在**开浏览器之前**报出来。
+ * `outputs.visual = 'full-frame'` 的依据是 `gl.clear(ctx.out, …)`（`wave.js:44`）。
+ */
+waveShot.spec = {
+  params: { id: 'string', label: 'string', cols: 'number', window: 'number' },
+  requires: ['music', 'analyze'],
+  outputs: { visual: 'full-frame', handlesTransition: false },
+};

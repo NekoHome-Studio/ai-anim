@@ -134,3 +134,20 @@ gridShot.meta = {
     { name: 'window', type: 'number', desc: '显示最近多少秒' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: ['music', 'analyze']` 的**依据是逐行代码**：
+ *   · `music.rms.length` / `music.fps`（`grid.js:56`）与 `music.low/mid/high[fi]`（`grid.js:59`）
+ *     —— 每一列的点亮高度全靠包络数组。
+ * 空音乐（`SILENT`）时 `env` 恒为 0 ⇒ **一格都不会点亮**，画面只剩暗格与文字。
+ * `outputs.visual = 'full-frame'` 的依据是 `gl.clear(ctx.out, …)`（`grid.js:45`）。
+ */
+gridShot.spec = {
+  params: {
+    id: 'string', label: 'string', cols: 'number', rows: 'number', window: 'number',
+  },
+  requires: ['music', 'analyze'],
+  outputs: { visual: 'full-frame', handlesTransition: false },
+};

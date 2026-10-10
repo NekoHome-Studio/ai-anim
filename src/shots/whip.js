@@ -124,3 +124,21 @@ whipShot.meta = {
     { name: 'dir', type: '[number, number]', desc: '甩的方向（uv 空间，如 [1, 0.12]）' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: ['under']` 的依据：`render()` 里 `const k = ctx.under ? ease.inOutCubic(f.tin) : 1;`
+ * （`whip.js:69`）—— 它把**上一段的成帧**当源纹理甩走，所以时间线上必须与上一段交叠
+ * （§14.4：`cut(whip, { dur, overlap, handlesTransition: true })`）。
+ * ⚠ 目前 `check` **只认 `music` / `analyze` 两个令牌**（见 `scripts/anim.mjs` 的
+ * `shotDependencyIssues()`）：交叠是**时间线层**的声明，任务源码的静态扫描判不准
+ * （多行对象 / `seq()` / `--only` 之后的段表都不一样），假报比不报更贵 —— 所以
+ * `under` 现在只是**声明**，还没有接线（BACKLOG 1-21 的后续）。
+ * `outputs.visual = 'transition'` 的依据是它读 `ctx.under` 而不是自己铺底（`whip.js:71-76`）。
+ */
+whipShot.spec = {
+  params: { id: 'string', streaks: 'number', dir: '[number, number]' },
+  requires: ['under'],
+  outputs: { visual: 'transition', handlesTransition: true },
+};

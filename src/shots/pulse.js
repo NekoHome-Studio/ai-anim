@@ -99,3 +99,19 @@ pulseShot.meta = {
     { name: 'title', type: 'string', desc: '底部那行标题' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: ['music', 'analyze']` 的**依据是逐行代码**：
+ *   · `music.nearestBeat(t - (i + 1) * 0.5)`（`pulse.js:45`）—— 拍点网格；
+ *   · `music.hit('kick', kt + 0.001, 0.2)`（`pulse.js:50`）—— 真实打击事件；
+ *   · `music.beats.length` / `music.kicks.length` / `music.snares.length`（`pulse.js:67`）—— 读数。
+ * 空音乐（`SILENT`）时这些都不抛错，只是同心圆全都不出现（画面只剩中枢方块与文字）。
+ * `outputs.visual = 'full-frame'` 的依据是 `gl.clear(ctx.out, …)`（`pulse.js:39`）。
+ */
+pulseShot.spec = {
+  params: { id: 'string', title: 'string' },
+  requires: ['music', 'analyze'],
+  outputs: { visual: 'full-frame', handlesTransition: false },
+};

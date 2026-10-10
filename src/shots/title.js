@@ -141,3 +141,19 @@ titleShot.meta = {
     { name: 'readout', type: 'boolean', desc: '是否画右下角随时间走的百分比读数' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: []` 的依据：`render()` 只读 `f.lt` / `P` / `type` / `lines` 与自带的背景 Pass
+ * （`title.js:59-126`，`t = f.lt`）—— 不读 `ctx.music`、不读 `ctx.under`，所以没有任何外部依赖：
+ * 省掉它不会让画面变黑。`outputs.visual = 'full-frame'` 的依据是 `setup()` 里那张整帧背景
+ * Pass（`title.js:39-56`）⇒ 它自己铺满整帧（§14.4）。
+ */
+titleShot.spec = {
+  params: {
+    id: 'string', eyebrow: 'string', title: 'string', sub: 'string', readout: 'boolean',
+  },
+  requires: [],
+  outputs: { visual: 'full-frame', handlesTransition: false },
+};

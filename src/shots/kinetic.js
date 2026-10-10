@@ -144,3 +144,19 @@ kineticShot.meta = {
     { name: 'cellSeed', type: 'number', desc: '计数器阵列的确定性随机种子' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: []` 的依据：`render()` 只读 `f.lt` / `P` 与自带的 fbm 背景 Pass（`kinetic.js:60-66`），
+ * 抖动相位来自 `rng(o.cellSeed)`（`kinetic.js:56`，确定性、不需要外部输入）。
+ * `outputs.visual = 'full-frame'` 的依据是 `setup()` 里那张整帧背景 Pass（`kinetic.js:36-53`）。
+ */
+kineticShot.spec = {
+  params: {
+    id: 'string', headline: 'string[2]', sub: 'string',
+    cellCols: 'number', cellRows: 'number', cellSeed: 'number',
+  },
+  requires: [],
+  outputs: { visual: 'full-frame', handlesTransition: false },
+};

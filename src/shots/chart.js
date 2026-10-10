@@ -171,3 +171,18 @@ chartShot.meta = {
     { name: 'peak', type: 'number', desc: '判"最高"的阈值：>= peak 的柱子用信号色' },
   ],
 };
+
+/**
+ * 声明式 spec（`docs/ENGINE.md` §14.9；`anim shots --json` 与 `check` 的依赖前置校验读它）。
+ *
+ * `requires: []` 的依据：`render()` 只读 `f.lt` / `P` / `o.values`（`chart.js:55-58`），
+ * 数据全部来自参数（`values` 的默认值就是写死的那 12 个数）—— 不读 `ctx.music` / `ctx.under`。
+ * `outputs.visual = 'full-frame'` 的依据是 `setup()` 里那张纸面 Pass（`chart.js:42-52`）。
+ */
+chartShot.spec = {
+  params: {
+    id: 'string', values: 'number[]', title: 'string', sub: 'string', footer: 'string', peak: 'number',
+  },
+  requires: [],
+  outputs: { visual: 'full-frame', handlesTransition: false },
+};
