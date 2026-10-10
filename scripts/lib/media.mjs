@@ -8,7 +8,13 @@
  * 它们的语义必须和 CLI 里那几个保持一致（尤其是 `ANIM_FFMPEG` / `ANIM_FFPROBE`
  * 这两个包装器环境变量：`tools/slow-ffmpeg.mjs` 这类测试就靠它）。
  *
- * 单位约定：时间是**秒**（浮点）；样本是 `Float32Array`（单声道）。
+ * 单位约定：时间是**秒**（浮点）；样本是 `Float32Array`（单声道）；
+ * 响度是 **LUFS**（整合）/ **dBTP**（真峰，不是采样峰值）/ **LU**（LRA），判据见 `LOUDNESS_TARGET`。
+ *
+ * 音频那一层的数字守门也在这里：`measureLoudness()` / `formatLoudness()` / `assessLoudness()`
+ * —— 画面有 `check` 亮度、`shake` 逐帧变化量、`verify` 逐像素、`video` 复核帧数，
+ * **音频这一层以前只能靠耳朵**（"你听不见，就说出这一点并报数字"）。
+ * ⚠ 这里**只测量、只报数字**，绝不做自动归一化：那会改动所有带旁白片子的音轨（等于已交付片子全部重出）。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -245,4 +251,238 @@ export function normalize(chans, target = 0.89) {
   // tanh 软削波：宁可轻微染色，也不要硬削出咔哒声
   for (const ch of chans) for (let i = 0; i < ch.length; i++) ch[i] = Math.tanh(ch[i] * gain * 1.05);
   return { peak, gain };
+}
+
+/* ------------------------------------------------------------------ 响度（音频的数字守门） */
+
+/**
+ * 响度目标：**主流平台的归一化靶子**（YouTube / Instagram / TikTok / X / LinkedIn 都是这一组）。
+ *
+ * 为什么是这三个数：
+ *   · `i` = −14 LUFS —— 平台会把更响的**压下来**、更轻的抬上去。做成 −14 上下，平台就不会再动它；
+ *     比它响很多（例如 −9）会被平台削掉动态，比它轻很多（实测 sodium-mix 是 −20.9）观众就得自己拧音量。
+ *   · `tp` = −1 dBTP —— **真峰**（true peak，考虑 DAC 重建后的采样间峰值）。留 1dB 余量，
+ *     是因为有损编码（AAC/MP3）与平台转码都可能把采样间峰值顶上去；压到 0 就会削。
+ *   · `lra` = 11 LU —— 响度范围。**超过它不算错误**（口播 + 音乐床天然就宽），只是提示"忽大忽小"。
+ */
+export const LOUDNESS_TARGET = { i: -14, tp: -1, lra: 11 };
+
+/**
+ * 从一段 stderr 里取出 **loudnorm 打印的那段 JSON**。
+ *
+ * ⚠ 为什么不能"从第一个 `{` 匹配到第一个 `}`"：`ANIM_FFMPEG` 允许是**包装器**
+ * （`tools/slow-ffmpeg.mjs` 就是），它会往 stderr 里掺自己的输出；ffmpeg 自己也会先打
+ * 一堆 `size=N/A time=…` 的进度行，最后才是这段 JSON。于是"第一个 JSON"可能根本不是它。
+ *
+ * 做法：**从后往前**扫描 `{`，用 `JSON.parse` 自己验 —— 取**最后一段能解析成对象**的花括号块
+ * （最后一个 `{` 若是尾随的垃圾，会继续往前找）。字符串里的花括号与转义引号都会正确跳过。
+ *
+ * @param {string} stderr
+ * @returns {Record<string, any>|null} 解析不出来返回 `null`（**不要**在这里抛错，调用方要能区分失败原因）
+ */
+export function parseLoudnormJson(stderr) {
+  const s = String(stderr ?? '');
+  for (let end = s.lastIndexOf('{'); end >= 0; end = s.lastIndexOf('{', end - 1)) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = end; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (inStr) {
+        if (c === '\\') { esc = true; continue; }
+        if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            const o = JSON.parse(s.slice(end, i + 1));
+            if (o && typeof o === 'object' && !Array.isArray(o)) return o;
+          } catch { /* 不是 JSON，继续往前找 */ }
+          break; // 这一块的配对已经结束，换下一个候选 `{`
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** ffmpeg 的 `<数字>` 可能是 `-inf` / `inf` / `nan` / `-1.#IND` —— 一律变成 `Number`。 */
+function num(x) {
+  const s = String(x ?? '').trim();
+  if (/^-?inf(inity)?$/i.test(s)) return s.startsWith('-') ? -Infinity : Infinity;
+  if (/^(nan|-?1\.#ind)$/i.test(s)) return NaN;
+  const n = Number(s);
+  return s === '' ? NaN : n;
+}
+
+/**
+ * 量一个音频/视频文件的响度：**LUFS（整合）/ true peak / LRA**。
+ *
+ * 走的是 `loudnorm` 两遍法的**第一遍**（`-f null -`，只量不改）——
+ * 所以这个函数**永远不会改动文件**：它只报数字。"自动归一化"是另一件事（会改掉所有已交付片子的音轨）。
+ *
+ *   const m = measureLoudness('tasks/x/audio/x-mix.mp3');
+ *   console.log(formatLoudness(m));                    // −13.8 LUFS / −1.2 dBTP / LRA 4.1
+ *   if (!assessLoudness(m).ok) …                       // 判据（可被单测直接断言）
+ *
+ * @param {string} file
+ * @param {{ stderr?: string, target?: { i?: number, tp?: number, lra?: number } }} [opts]
+ *        `stderr` 给定时**不跑 ffmpeg**，只解析这段文本（单测"最后一段完整 JSON"用）。
+ * @returns {{ ok: true, file: string, i: number, tp: number, lra: number, thresh: number,
+ *             targetOffset: number, target: { i: number, tp: number, lra: number },
+ *             raw: Record<string, any>, argv: string[] }}
+ * @throws {Error} 失败是**可区分**的三种（`err.kind`），绝不返回 `null` 让上游以为"测过了"：
+ *   · `no-input`  —— 文件不存在 / 读不到；
+ *   · `no-ffmpeg` —— 没有 ffmpeg（或 `ANIM_FFMPEG` 指的东西跑不起来）；
+ *   · `ffmpeg-error` —— ffmpeg 自己非零退出（解不开的格式等）；
+ *   · `no-json`   —— 跑完了但 stderr 里没有可解析的 loudnorm JSON（包装器吃掉了？ffmpeg 太老？）。
+ */
+export function measureLoudness(file, opts = {}) {
+  const target = { ...LOUDNESS_TARGET, ...(opts.target ?? {}) };
+
+  // ① 只解析给定文本（单测用；不碰 ffmpeg、不碰磁盘）
+  if (typeof opts.stderr === 'string') {
+    const raw = parseLoudnormJson(opts.stderr);
+    if (!raw) {
+      const e = new Error('给定的 stderr 里没有可解析的 loudnorm JSON');
+      e.kind = 'no-json';
+      throw e;
+    }
+    return packLoudness(String(file), raw, target, []);
+  }
+
+  const f = String(file ?? '');
+  if (!f || !existsSync(f)) {
+    const e = new Error(`文件不存在：${f || '(空路径)'}`);
+    e.kind = 'no-input';
+    throw e;
+  }
+
+  const argv = [...ffmpegArgv(), '-hide_banner', '-nostdin', '-v', 'info', '-i', f,
+    '-af', `loudnorm=I=${target.i}:TP=${target.tp}:LRA=${target.lra}:print_format=json`,
+    '-f', 'null', '-'];
+  const r = tryRun(argv);
+
+  if (r.spawnError) {
+    const e = new Error(`跑不起 ffmpeg（${argv[0]}）：${r.spawnError}。装一个，或用 ANIM_FFMPEG 指定。`);
+    e.kind = 'no-ffmpeg';
+    throw e;
+  }
+  if (r.status !== 0) {
+    const tail = (r.stderr || r.stdout).trim().split(/\r?\n/).slice(-6).join('\n');
+    const e = new Error(`ffmpeg 量响度失败（exit ${r.status}）：${f}\n${tail}`);
+    e.kind = 'ffmpeg-error';
+    e.exit = r.status;
+    throw e;
+  }
+  const raw = parseLoudnormJson(r.stderr);
+  if (!raw) {
+    const tail = String(r.stderr).trim().split(/\r?\n/).slice(-6).join('\n');
+    const e = new Error(
+      `ffmpeg 跑完了但 stderr 里没有 loudnorm 的 JSON：${f}\n`
+      + `（是这个 ffmpeg 太老、没有 loudnorm 滤镜？还是 ANIM_FFMPEG 包装器把 stderr 吃掉了？）\n${tail}`);
+    e.kind = 'no-json';
+    throw e;
+  }
+  return packLoudness(f, raw, target, argv);
+}
+
+/** 把 loudnorm 那串字符串字段收成结构化对象（`i` / `tp` / `lra` 一律是 `Number`，可能是 ±Infinity / NaN）。 */
+function packLoudness(file, raw, target, argv) {
+  return {
+    ok: true,
+    file,
+    i: num(raw.input_i),
+    tp: num(raw.input_tp),
+    lra: num(raw.input_lra),
+    thresh: num(raw.input_thresh),
+    targetOffset: num(raw.target_offset),
+    target,
+    raw,
+    argv,
+  };
+}
+
+/**
+ * 判据：**离 `-14 / -1` 差多少、有没有越界**。纯函数，单测直接断言它。
+ *
+ * 越界分两档（照 `check` 的既有哲学：越界 ≠ 一律失败）：
+ *   · `error`：不达标（`|i − target.i| > tolLu`）、超过真峰上限（`tp > target.tp`）、或者数字本身不是有限数；
+ *   · `warn` ：LRA 超过上限（口播 + 音乐床天然就宽 —— 提示"忽大忽小"，不 gate）。
+ *
+ * @param {ReturnType<typeof measureLoudness>|{ i:number, tp:number, lra:number, target?:any }} m
+ * @param {{ tolLu?: number, tpCeiling?: number, lraMax?: number }} [opts]
+ * @returns {{ ok: boolean, tolLu: number, di: number, dtp: number, dlra: number,
+ *             loudOk: boolean, peakOk: boolean, lraOk: boolean, tier: 'ok'|'warn'|'error',
+ *             violations: { kind: 'loudness'|'true-peak'|'lra'|'nan', tier: 'error'|'warn', text: string }[],
+ *             verdict: string }}
+ */
+export function assessLoudness(m, opts = {}) {
+  const target = { ...LOUDNESS_TARGET, ...(m?.target ?? {}), ...(opts.target ?? {}) };
+  const tolLu = opts.tolLu ?? 1.0;
+  const tpCeiling = opts.tpCeiling ?? target.tp;
+  const lraMax = opts.lraMax ?? target.lra;
+
+  const i = Number(m?.i);
+  const tp = Number(m?.tp);
+  const lra = Number(m?.lra);
+  const finite = Number.isFinite(i);
+  const tpFinite = Number.isFinite(tp);
+
+  const di = finite ? i - target.i : NaN;
+  const dtp = tpFinite ? tp - tpCeiling : NaN;
+  const dlra = Number.isFinite(lra) ? lra - lraMax : NaN;
+
+  const loudOk = finite && Math.abs(di) <= tolLu;
+  // 真峰是**上限**：只要不比上限响就算过（比目标轻不是问题；NaN 也算不达标）
+  const peakOk = tpFinite && tp <= tpCeiling;
+  const lraOk = !Number.isFinite(lra) || lra <= lraMax;
+
+  /** @type {{ kind: string, tier: 'error'|'warn', text: string }[]} */
+  const violations = [];
+  if (!finite) {
+    violations.push({ kind: 'nan', tier: 'error', text: `量不出整合响度（input_i = ${m?.i}）—— 文件是静音、或者根本不是音频` });
+  } else if (!loudOk) {
+    violations.push({
+      kind: 'loudness', tier: 'error',
+      text: `${i.toFixed(1)} LUFS 离目标 ${target.i} 差了 ${di > 0 ? '+' : ''}${di.toFixed(1)} LU`
+        + `（容差 ±${tolLu.toFixed(1)}）—— ${di > 0 ? '平台会把它压下来，动态被削' : '比平台靶子轻，观众得自己拧音量'}`,
+    });
+  }
+  if (!tpFinite) {
+    violations.push({ kind: 'nan', tier: 'error', text: `量不出真峰（input_tp = ${m?.tp}）` });
+  } else if (!peakOk) {
+    violations.push({
+      kind: 'true-peak', tier: 'error',
+      text: `真峰 ${tp.toFixed(2)} dBTP 超过上限 ${tpCeiling} dBTP：平台/有损转码会削顶`,
+    });
+  }
+  if (!lraOk) {
+    violations.push({
+      kind: 'lra', tier: 'warn',
+      text: `LRA ${lra.toFixed(1)} LU 超过 ${lraMax}：这一段忽大忽小（口播 + 音乐床的片子天然就宽，只提示不 gate）`,
+    });
+  }
+
+  const tier = violations.some((v) => v.tier === 'error') ? 'error'
+    : (violations.length ? 'warn' : 'ok');
+  const verdict = tier === 'ok' ? `达标（${target.i} LUFS / ${target.tp} dBTP）` : violations.map((v) => v.text).join('；');
+  return { ok: tier !== 'error', tolLu, di, dtp, dlra, loudOk, peakOk, lraOk, tier, violations, verdict };
+}
+
+/**
+ * 人读的一行：`−13.8 LUFS / −1.2 dBTP / LRA 4.1`（`peak` 是**真峰**，不是采样峰值）。
+ * @param {{ i:number, tp:number, lra:number }} m
+ * @param {{ verdict?: boolean, target?: any }} [opts] `verdict: true` 时会在后面接一句判据文字
+ */
+export function formatLoudness(m, opts = {}) {
+  const one = (v, u = '') => (Number.isFinite(v) ? `${v.toFixed(1)}${u}` : (v === -Infinity ? '-∞' : 'NaN'));
+  const line = `${one(Number(m?.i))} LUFS / ${Number.isFinite(Number(m?.tp)) ? Number(m.tp).toFixed(2) : (Number(m?.tp) === -Infinity ? '-∞' : 'NaN')} dBTP`
+    + ` / LRA ${one(Number(m?.lra))}`;
+  return opts.verdict ? `${line} —— ${assessLoudness(m, opts).verdict}` : line;
 }
