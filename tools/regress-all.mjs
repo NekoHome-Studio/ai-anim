@@ -63,6 +63,11 @@ const ITEMS = [
   { name: 'unit:blocks', cmd: ['tools/test-blocks.mjs'], note: '方块世界 kit：面朝向判据 / 深度排序 / 世界切片 / 摄影机关键帧' },
   { name: 'unit:check-skipped', cmd: ['tools/test-check-skipped.mjs'], note: '1-19「空≠干净」：skipped 收集/聚合/结论行 + --quick 分档 + 接线自检（25 项）' },
   { name: 'unit:notes', cmd: ['tools/test-notes.mjs'], note: '1-29 后半：NOTES.json 的读写/校验纯函数 + clean 保护判据（57 项）' },
+  // ⚠ **不是 gate**（与 lint-narration-dup 同一个前例，见上面那段注释）：现在 6 个有事实表的任务里
+  //   3 个必然命中（nekohome 5 / promo 4 / fidus 1，全是没登记的镜号），当 gate 会让清单永久变红。
+  //   这一项只断言**工具自身可用**（正例响 / 反例静 / 条数钉死 / 空≠干净 / 退出码三档），
+  //   不会因为片子内容而红。夹具在 `tools/fixtures/lint-numbers/`。
+  { name: 'unit:lint-numbers', cmd: ['tools/test-fabricated-numbers.mjs'], note: '1-22 画面数字必须有出处：正例必须响 / 反例必须静 / 显示位条数钉死 / 空≠干净 / 退出码三档（139 项）' },
   { name: 'harness:demo', cmd: ['tools/scene-harness.mjs', 'demo'], note: '离线跑场（假 ctx，不起 Chrome，0.1s）：未定义变量 / 确定性 / 文字出画' },
   { name: 'harness:style-sampler', cmd: ['tools/scene-harness.mjs', '_style-sampler'], note: '风格采样器：配置档 4 段 + 风格解析走通' },
 
