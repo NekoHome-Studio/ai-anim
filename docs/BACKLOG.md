@@ -9,8 +9,19 @@
 > **维护规则**：只有本文是待办；做完一条就移到 §5 并注明**哪一轮做的**（保留一行，不要静默删除）；
 > 每条都要能回答"从哪接着做 / 怎么算做完"。
 >
-> 最后整理：**2026-10-10**（本轮新增 §1.B / §1.C —— 拆解三个外部"agent 做视频"项目之后的画面/验证能力清单，
-> 来源见那两节开头）。
+> 最后整理：**2026-10-10 深夜**（第九轮：把 §1 / §1.B 里"小而硬"的一批派给并发子代理做完 ——
+> 1-2 / 1-3 / 1-16 / 1-19 / 1-20 / 1-28 / 1-29 已落地并移入 §4；**1-1 核实后剔除**（直接接线会做成一个
+> "永远绿"的假覆盖 —— 今天没有任何 `tasks/` 用 `src/kit/blocks.js`，理由见该行）；同一轮还按核实结果更正了
+> 5 处与代码不符的描述，见 §0-3 / §0-5 / §1-1 / §1-5 / §1-10）。
+>
+> **第九轮顺手记下的新待办**（做这一批时发现的，别丢）：
+> ① `cmdCheck` 里 `resolveAudioTracks` 那条路在 `analyzeTaskAudio` 因缺 ffmpeg 时只 warn 一句就返回 null
+> —— 同属"少打一行"家族（1-19 收口的那四处之外）；
+> ② `measureLoudness` 没有 `-t <秒>` 截断，一次量整条轨（246s 的轨约 14s）—— 要不要给 `check` 一个更省的档；
+> ③ `tools/sheet-audio.mjs` 的 `--sheet` 路径（复用 `anim sheet` 的接触表 PNG）**没对着真产物验过**
+> （版面公式只从代码读出），验过的是 mp4 主路径；
+> ④ 1-21 可以直接吃 `anim shots --json` 了（契约在 `ENGINE.md` §14.9），但 **`tools/test-shots.mjs:49` 把模板集合
+> 写死成 8 个** —— 补 spec 时别顺手加模板（见 §0-5）。
 
 ---
 
@@ -32,8 +43,6 @@
 | # | 事 | 从哪接着做 | 出处 |
 |---|---|---|---|
 | 1-1 | **`check` 增加几何自检**：随机取几个"已知应该可见"的面，验证"被铺的面 = 朝镜头的面" | 这类"不报错但画面全错"的几何 bug 目前**只能靠眼睛**（`facesToward` 反向那次出图核对了 20+ 帧才定位到）。判据可以先做成纯 JS 的（`tools/test-blocks.mjs` 已有正反用例可复用）。<br>⚠ **2026-10-10 核正：先解决「假覆盖」再动手** —— 今天**没有任何 `tasks/` 引用 `src/kit/blocks.js`**（老任务各自带一份私有拷贝），所以直接把它接进 `check` 会做出一个**永远绿**的检查（在现有任务集上不可能被触发）。要么先迁一个任务过来用 kit，要么专门做一个夹具任务 —— 否则这条等于没做 | [`history/IMPROVEMENTS-4-5.md`](history/IMPROVEMENTS-4-5.md) 第四轮 §6 **F**（⬜ 未做） |
-| 1-2 | **`anim say` 的标点对齐优化**：47/47 句都命中「词级时间戳与原文有 1–8 个字符没对应」 | 现有处理（按顺序对齐 + 保住真时间戳）**是对的**，但可以把标点先从比对里排除，只有"排除标点后仍对不上"才走对齐 | [`history/IMPROVEMENTS-4-5.md`](history/IMPROVEMENTS-4-5.md) 第四轮 §6 **B**（⬜ 未做） |
-| 1-3 | **产物守门失败时的措辞**：不要把 CLI 自己也修不了的原因写成"重跑即可" | 按**已知 / 未知**分开措辞 —— 拼接那一步的失败是**确定性**的，重跑没有意义（这一轮照着重跑白等了 30 秒） | [`history/IMPROVEMENTS-4-5.md`](history/IMPROVEMENTS-4-5.md) 第四轮 §1.5（原文标"未落地"） |
 | 1-4 | **`_accumPass()` 在渲染成片时仍静默丢弃非有限值** | `check` 现在能扫出来（`scanNonFinite`），但 `video` 路径没有。想更早发现要在 `video` 里也开扫描 —— 每帧多一次浮点回读，**代价要先实测** | [`history/STATUS-rounds-1-6.md` §13.4.8](history/STATUS-rounds-1-6.md) |
 | 1-5 | **`probe-alpha` 的 `blank` 参考帧常量偏移**（读 0.10012 而不是 0.062） | ⚠ **2026-10-10 核正：这不是 bug，是那句注释写错了口径** —— `readPixels` 走 `src/core/gl.js` 的 sRGB 编码，`lin2srgb(0.01) ≈ 0.1005` ⇒ **0.10012 才是对的**（0.062 是拿线性值当显示值）。相对判据（`meanOf` 那套）本来就成立。**只剩一件事**：`scripts/anim.mjs` 里 `cmdProbeAlpha` 附近那条陈旧注释还写着 `max≈0.06`。⚠ **别照着注释去"修" blank** —— 把 0.10 掰成 0.06 会让 ⑤⑥ 两条判据集体失真 | [`history/STATUS-rounds-1-6.md` §13.4.8](history/STATUS-rounds-1-6.md) · §11.17.3 |
 | 1-6 | **`edge-tts` 的偶发失败**：现在同一句重试 2 次 | 几百句的长旁白值得加"失败也继续、最后统一补跑"（[`history/IMPROVEMENTS-4-5.md`](history/IMPROVEMENTS-4-5.md) 第四轮 §6 A 已做了 0 字节重试，这一条是更上层的批量容错） | [`history/STATUS-rounds-1-6.md` §13.4.8](history/STATUS-rounds-1-6.md) |
@@ -75,11 +84,8 @@
 
 | # | 事 | 从哪接着做 | 出处 |
 |---|---|---|---|
-| 1-16 | ★ **给 `sheet` 叠一条音频通道**：抽帧接触表 + 波形 + ≥400ms 静音带 + **旁白词级标签** + 时间标尺，横轴同一个时间窗 —— 一张 PNG 判定"这个揭晓发生在旁白说到哪一刻" | 三样数据全在手上：`sheet` 的抽帧、`audio/narration.json` 的 `lines[].words`（**整片绝对时间**，`anim say` 已产出）、`src/core/audio-analysis.js` 的纯 JS 包络（**不必像对方那样临时抽 WAV、也不必引 numpy/librosa**）。落在 `tools/sheet-audio.mjs` 或 `sheet` 的一个 `--audio` 开关（不碰 GPU、不进渲染路径）。对方明写这条要"**只在决策点调用，不拿它当扫描工具**"，文案照抄这个边界 | [`REFERENCE-video-use.md`](REFERENCE-video-use.md) §3.1（对方 `timeline_view.py`） |
 | 1-17 | ★ **词锚定时间线**：让作者写"说到『兽语』时切镜头"，而不是 `cue: 0.6` / `internal: 4.2` 这类猜出来的秒数 | 四步：① `narration.mjs` 的 `SCENES[].lines[]` 加 `on: { word, edge: 'start'\|'end' }` 与 `reveal: { at: { line, word, edge } }`（**抄语义不抄 XML 标记** —— 我们的输入已经是结构化 JSON）；② 新纯函数 `resolveNarration()`：输入脚本 + `narration.json` 的 `words` → 输出**现有的 `timing.mjs`**（`slot`/`stretch`/`overlap`）+ 一份 `anchors.json`，**场景侧一行都不用改**；③ **必须实现左右亲和**（词间那段停顿归前一句还是后一句 —— 不实现就被静默归错且不报错）；④ 求解顺序 = 锚点 → 段内时刻 → 再算 `stretch`/`slot`，**段内偏移要跟着乘 `stretch`**。边界与风险：每段限 2–3 个锚点（锚点太多就变成另一种秒数）；**锚点只表达"在哪个词上做什么"，永远不能表达"持续 3 秒"**（否则 `stretch` 失去唯一解）；中文分词对不上时**抛错并列出该句所有可用词**（与现有报错哲学一致）；无词级时间戳时降级回秒，并**在 `check` 里警告"这一段改词不会自动重排"**。验收：扩展 `node tools/test-say.mjs`（纯 JS、不联网、不需要 GPU） | [`REFERENCE-hypit.md`](REFERENCE-hypit.md) §2 与 §5.1（对方 `packages/script`、`narrative-temporal`、`timeline-author`）；⚠ 它"等长、不许拉伸"**不要抄**（我们靠 `stretch`） |
 | 1-18 | ★ **`check` 加画面语义断言**：`tasks/<任务>/motion.json` 声明 `appearsBy(段, 秒)` / `before(段A, 段B)` / `keepsMoving(段, maxStaticSec)` / 帧边缘不许有硬内容 —— 让"该出现的没出现 / 顺序反了 / 整段没动"变成可 gate 的错误 | 落在 `check` 已有的逐段试渲染 + 三点采样里；段级统计量复用 `scripts/lib/shake.mjs`（**把"只看 post.shake"扩成"看整帧"** 就得到帧间变化量）。⚠ 需要**相邻帧**而不只是孤立采样点，所以试渲染时间会涨（先实测）。对方两条元设计必须一起抄：**"严重性持久性感知"**（只在单点出现的入场瞬态降级为 info、永不 gate；跨采样点保持才 gate）与 **"空 ≠ 干净"**（见 1-19） | [`REFERENCE-hyperframes.md`](REFERENCE-hyperframes.md) §4.2（对方 `sweep_static` / `motion_frozen` / `motion_appears_late` / `motion_out_of_order` / `canvas_content_at_edge`） |
-| 1-19 | **`check` 的"空 ≠ 干净"**：某段试渲染失败、浏览器没起来、某项审计没跑时，**必须显式报 `skipped`**，而不是少打一行让 agent 当成通过 | 加一个 `skipped` 字段并列进输出。**改动极小、收益极大** —— 这是三份拆解里唯一一处**三个项目都指向**的失败模式（对方原话：浏览器没跑起来时那三个 section 是"empty, not clean"，"which reads like a clean file but means nothing ran"）；同源的还有现有 `--parallel` 静默忽略 `--segments`（见 1-24） | 三份报告：hyperframes §4.2 / video-use §3.7 / hypit §6 ③ |
-| 1-20 | **音频响度数字守门**：`anim mix` 与成片收尾报 **LUFS / true peak / LRA**，目标是 `-14 LUFS / -1 dBTP`（对齐主流平台归一化） | `scripts/lib/media.mjs` 加 `measureLoudness()`（两遍 `loudnorm` + 从 stderr 抓 JSON），`anim mix` 打印数字、`check` 里报出来。对方把它上升成了纪律："**你听不见，就说出这一点并报数字**"——我们 `check` 用亮度、`shake` 用逐帧变化量、`verify` 逐像素、`video` 复核帧数，**唯独音频这一层还靠耳朵** | [`REFERENCE-video-use.md`](REFERENCE-video-use.md) §3.2 |
 | 1-21 | **镜头模板的声明式 spec + 依赖前置校验**：给每个 `src/shots/*.js` 补 `spec`（参数类型/默认值/`requires: ['music']`/`outputs.visual`），`check` 用它把"`wave` 需要 `audio` + 先跑 `analyze`"提前报出来 | 现在参数表是**运行时反射**的（`src/shots/index.js` 的 `listShots()`），只能报错、不能被校验依赖。**调用签名一个字不用改**（`shot('chart', {…})` 与配置档写法都不动）。⚠ **只做 spec，不做 npm 分发**：我们是单仓、8 个模板，抽包是架构手术，等真出现"给第二支片子复用"再说（有了 spec，抽包是机械活） | [`REFERENCE-hyperframes.md`](REFERENCE-hyperframes.md) §4.1（`registry-item.json`）· [`REFERENCE-hypit.md`](REFERENCE-hypit.md) §5.2（双层门槛：工程门槛低、生态门槛是产品判断） |
 | 1-22 | **"画面上的数字必须有出处"**：数值显示位（`type.write` 的字符串、`chart` 的 `values`、`codeRow` 的文本）里的字面量数字，要么能在 `FACTS.md` 找到出处，要么写成占位符 | **先做纪律、后做自动化**：① 写进 `AGENTS.md` §10 交付自检与 `docs/FACTS-TEMPLATE.md`；② 之后再做 `tools/lint-fabricated-numbers.mjs`（扫"数值显示位"的字面量 → 查 `FACTS.md` → 报 `file:line`）。理由：对方**也只是写成硬规则 + 交付前自审**（"绝不在帧尺度上编造数字、增量、日期、计数；槽位先渲染成 `— figure —`"），没有自动化。⚠ **这条对我们的伤害面最大** —— 我们的画面全是代码算的，**编一个数字的成本是零** | [`REFERENCE-hyperframes.md`](REFERENCE-hyperframes.md) §4.3（"Numbers come from the script" 硬规则 + Pre-Render Self-Audit） |
 | 1-23 | **`variants` 覆写 + `narration.json` 可显式指定**：同一支片子出多个版本（换风格 / 换配色 / 换语言 / 剪短版） | ① `task.config.mjs` 加 `export const variants = {…}`，CLI 加 `--variant`：深合并覆盖 + **产物与块缓存按 variant 分目录**（`narration.json` / `timing.mjs` / `video --segments` 的块，**不分目录就会串味**，这是最容易出 bug 的地方）；② 更值钱的是后半：让 `narration.json` 成为**可显式指定的输入**（"这一段用上次那份词级时间戳，不要重新合成"）—— 改一句词现在会导致**整片重渲**，有了它，换风格/换顺序的变体可以**零 TTS 成本**重出 | [`REFERENCE-hypit.md`](REFERENCE-hypit.md) §5.4（Source/Run 分离 + 显式复用 Output） |
@@ -87,8 +93,6 @@
 | 1-25 | **并发子代理的 brief 模板**（做变体时直接可用） | 对方 10 项 brief 里有三条我们特别该抄：**确切技术规格**（必须写死 width/height/fps/scale/style/captions，否则默认值会漂）、**anti-list**（"不要什么" —— "相邻两支片子不能同风格"本质就是一张 anti-list）、**"不要提问，自己挑最显然的解释往下做"**（并行子代理一提问整批就卡住）。零代码，写进 [`SCENE-BRIEF-TEMPLATE.md`](SCENE-BRIEF-TEMPLATE.md) | [`REFERENCE-video-use.md`](REFERENCE-video-use.md) §3.4 |
 | 1-26 | **`anim cuts`：切点两侧 ±1.5s 固定出图** | 现在的三点采样是 15%/50%/85%，**不落在切点上**；要知道切点长什么样得手写 `--only`。`sheet --only` 已有全部零件。对方还给了配套的两条流程纪律（**零代码**）：自检**最多 3 轮**、3 轮不过就交人；对外发布前派一个"**roast, not to praise**"的审查者（给按时间码排序的问题清单 + 证据） | [`REFERENCE-video-use.md`](REFERENCE-video-use.md) §3.3 |
 | 1-27 | **运动规则表 `docs/MOTION.md` + 3 个 kit 函数** | 我们有很好的"原子函数库"（`src/kit/`），缺的是**"什么时候用哪个"**的判据 —— 照 `AGENTS.md` §5.5 那张"按画面需要什么选 3D"的表推广到运动本身。具体的**调参成果可以免费拿走**：三段式位移 `10/65/25`（尾部 ≥3× 加速段）、碰撞式转场的受害者时长 = 入侵者的 `40–50%`、"**到达不要用淡入，要用二值出现**"、`items × stagger ≤ ~0.5s`。加 3 个 kit 函数（`nudgeCurve` / stagger 上限告警 / 辉光峰值上限），上限类判据大多**静态可查**（不必渲染） | [`REFERENCE-hyperframes.md`](REFERENCE-hyperframes.md) §4.4（对方 `nudge-curve` / `waterfall-entry` / `reactive-displacement` 与 40+ 条原子规则） |
-| 1-28 | **"输出词 → 含义 → 修法"表**（把一个诊断词连到一条动作） | 我们的 `check` / `verify` / `shake` / `probe-*` 输出里已经有一批术语（"非有限值：NaN n / Inf n"、"背景守门"、"空档"、"段内亮度不均"），但没有一张**集中的**对照表。对方的关键做法是：**诊断输出里的词，与"教怎么修"的词，必须是同一份词表**（否则 agent 拿到 `flat` 不知道该干嘛）。`AGENTS.md` §8/§10 末尾那两张表已经很接近，扩成三列并覆盖全部探头即可 | [`REFERENCE-hyperframes.md`](REFERENCE-hyperframes.md) §3.2(d) 与 §4.5 |
-| 1-29 | **工具小账**：`anim shots` 的 `--json`（机器可读的模板参数表，给 1-21 的 spec 与将来的 catalog 用）；`out/<任务>/NOTES.json`（同构的评论文件：`{id, run, at, text, resolved}`，`at` 是秒） | 两条都极小。`--json` 是 1-21 的前置；`NOTES.json` 让"第 12.5 秒这里字幕太小"这类反馈有个落点（对方的 Studio 就是这么做的：评论是**普通项目文件**，读写走文件、不轮询不重编译） | [`REFERENCE-hypit.md`](REFERENCE-hypit.md) §5.5（`FEEDBACK.json`）· [`REFERENCE-hyperframes.md`](REFERENCE-hyperframes.md) §4.1 |
 
 > **§1.B 里不建议做的**（列出来免得以后又想起来）：镜头包 npm 分发（我们是单仓、8 个模板 —— 先把 1-21 的 spec 写对）、
 > 分布式 / 云渲染（我们的瓶颈是 GPU 填充率，搬上 CPU 云只会更慢；分块已经有 `--segments`）、
@@ -155,3 +159,9 @@
 | 整份 `regress-all` 没跑 | 已跑：**32/32 通过**（`node tools/regress-all.mjs`，约 12 分钟） |
 | `--segments` 收尾截掉视频尾巴（`-shortest`） | 第四轮 §1 已修并验证，同源两处（`renderParallel` / `renderToFile`）也补了 `-af apad` |
 | 导入模型 `.glb` / `.gltf` | **用户明确说不需要**（几何全部程序化）；将来要加不用返工（`setup(ctx)` 本来就是异步的） |
+| `anim say` 标点对齐判据收窄（只差标点不再报警，漏**实义**字符才报） | **第九轮**（2026-10-10，`839d0b1`）：判据从"跳过字符数 > 0"改成"跳过**实义**字符"；90 句真实旁白 **90/90 → 0/90** 命中，三条契约（拼回原文 / 真时间戳 / 不退化近似）仍 90/90；注入真异常时恰好那 1 句报出 |
+| `check` 的「空 ≠ 干净」（`skipped:`）+ 产物守门按「已知原因 / 原因未知」分档措辞 | **第九轮**（`9693291` `afccab1` `5432cf6`）：5 个"没跑成"的落点一律进 `skipped:`（按 `what` 聚合 ×N），结论行永远带"另有 N 项没跑"；`--strict` 才把它变成非零（**默认不改退出码**）。离线单测固化在 `tools/test-check-skipped.mjs`（24 项，含**静态接线自检**） |
+| 音频响度数字守门（LUFS / true peak / LRA） | **第九轮**（`ca53061` 库 + `099eec3` 接线）：`measureLoudness` / `assessLoudness` / `formatLoudness` 在 `scripts/lib/media.mjs`；`anim check`（对 `packaging` 轨）与 `anim mix` 各报一次，靶子 **-14 LUFS / -1 dBTP**。**只报数字，不 gate、不自动归一化**（归一化 = 所有带旁白片子重出）。量具 `tools/test-loudness.mjs`（34 项）；实测 `sodium-mix.mp3` = **-20.9 LUFS / -2.96 dBTP / LRA 8.3** |
+| `tools/sheet-audio.mjs`：接触表 + 波形 + 静音带 + **旁白词级标签** + 时间标尺叠进同一张 PNG | **第九轮**（`314c290` `33f2754`）：**不重新渲染**（从已有成片 mp4 抽帧，不起 Vite / Chrome），横轴共用同一时间窗。sodium 实测 `out/sodium/sheet-audio_0-12_vo.png`：22/28 词标签画出、揭晓落在 8.80–9.60s（与设计 `cue × stretch = 9.557s` 对得上）。边界：**只在决策点调用，不拿它当扫描工具** |
+| `docs/DIAGNOSIS.md`（输出词 → 含义 → 修法 三列表） | **第九轮**（`64b85cd` `fea8566` `e919a7a`）：211 行三列表；词全部 grep 自代码，每条带 `文件:行号` + 函数名；另有 §2 退出码语义、§3「空 ≠ 干净」的读法、§5 已知分叉。`AGENTS.md` §8 / §10 各加一行链接，§10 清单补了判据型命令与 `--quick` / `--strict` |
+| `anim shots --json`（机器可读的模板参数表）+ `anim note`（`NOTES.json` 评论文件） | **第九轮**（`a5f9a37` `2fb8e7a` `002e7ec`）：schema `anim.shots/1`，字段契约在 `ENGINE.md` §14.9（**它是 1-21 的输入契约**，`requires` / `outputs` 的位置已留好）；`anim note` 读写 `out/<任务>/NOTES.json`，`anim clean` **绝不删它** |
