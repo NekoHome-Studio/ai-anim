@@ -1635,6 +1635,14 @@ export default shot('chart', {
 
 `values` / `headline` 这类数组参数的**元素个数决定画面**（柱子数、两行大字），不是随便塞几个都行。
 
+每个模板的工厂函数上还挂着一份**声明式 `spec`**（参数类型 `params` / 依赖 `requires` / 产出 `outputs`）：
+它是 §14.9 那份机器可读载荷里 `requires`、`outputs` 两个字段的来源，也是 `check` 的**依赖前置校验**
+读的那份事实（"用了 `wave` 却没配 `audio`"要在**开浏览器之前**就报出来，而不是等出图发现全黑）。
+看某个模板的 spec：`node scripts/anim.mjs shots wave --json`。
+⚠ 加 spec **只是加声明**：`shot('名字', {…})` / `{ type: '名字', … }` 两种调用签名一个字都没变，
+`defaults` 与绘制代码也一个字没动（`tools/test-shots.mjs` §9 把"spec 与 defaults / `meta.params` /
+场景对象逐项一致"变成断言）。
+
 ### 14.3 需要音乐的三个模板
 
 `wave` / `pulse` / `grid` 读 `ctx.music`（§10.2）：包络数组（`rms` / `low` / `high`，每帧一个值、按 `music.fps` 索引）、
@@ -1739,6 +1747,9 @@ node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这�
 {
   "schema": "anim.shots/1",
   "count": 1,
+  "requireTokens": {
+    "music": "画面读 `ctx.music`（音频包络 / 真实打击事件 / 拍号）—— 任务要在 task.config.mjs 里配 `audio`"
+  },
   "shots": [
     {
       "name": "chart",
@@ -1747,7 +1758,9 @@ node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这�
       "params": [
         { "name": "values", "type": "number[]", "desc": "每根柱子的值（0..1；默认 12 个…）",
           "default": [0.18, 0.34, 0.27], "required": false }
-      ]
+      ],
+      "requires": [],
+      "outputs": { "visual": "full-frame", "handlesTransition": false }
     }
   ]
 }
@@ -1757,24 +1770,33 @@ node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这�
 |---|---|---|
 | `schema` | string | `"anim.shots/1"`（`SHOTS_SCHEMA`）。**字段名或含义变了就要改这个串** |
 | `count` | number | 本次输出的模板数（给了模板名就是 1） |
+| `requireTokens` | object | 依赖令牌的词表（令牌 → 一句话含义），来自 `src/shots/index.js` 的 `SHOT_REQUIRES`。**1-21 新增**；调用方没给词表时这个键不出现 |
 | `shots[]` | array | 一个模板一个对象，**顺序 = `SHOTS` 的登记顺序**（与 §14.2 那张表一致） |
 | `shots[].name` | string | 模板名 = `shot('名字')` / `{ type: '名字' }` 里的那个名字 |
 | `shots[].summary` | string | 一句话摘要（人读表格里的那一列） |
-| `shots[].notes` | string | 长注释。**目前"需要音乐"这类依赖只写在这里（散文）**：`wave`/`pulse`/`grid` 见 §14.3 |
+| `shots[].notes` | string | 长注释。**"需要音乐"这类依赖现在同时在 `requires` 里**（散文留着讲细节）：`wave`/`pulse`/`grid` 见 §14.3 |
 | `shots[].params[]` | array | 参数表，顺序 = 模板自己 `meta.params` 的顺序（不是默认值的键序） |
-| `params[].name` / `.type` / `.desc` | string | 参数名 / 类型（`string` `number` `number[]` `boolean` …）/ 说明 |
+| `params[].name` / `.type` / `.desc` | string | 参数名 / 类型（`string` `number` `number[]` `boolean` …）/ 说明。`type` 以模板的 `spec.params` 为准（没有 spec 时回落到 `meta.params[].type`） |
 | `params[].default` | any \| null | 默认值（=「什么都不传时的画面」，取自工厂函数的 `.defaults`） |
 | `params[].required` | boolean | **没有默认值**（不传时模板拿到 `undefined`）。此时 `default` 恒为 `null` —— JSON 里没有 `undefined`，由 `required` 区分 |
+| `shots[].requires` | string[] | **1-21 新增**：依赖令牌（取值见 `requireTokens`）。`[]` = 明确声明"不需要外部输入" |
+| `shots[].outputs` | object | **1-21 新增**：`{ visual: 'full-frame' \| 'transition', handlesTransition: boolean }`。`visual` 的值域见 `src/shots/index.js` 的 `SHOT_VISUALS`；`handlesTransition` 与场景对象上那个字段必须一致（`tools/test-shots.mjs` §9 断言） |
 
-两条**读法**（与字段名一样是契约的一部分）：
+三条**读法**（与字段名一样是契约的一部分）：
 
 1. **`required: true` ⟺ 缺默认值**，不代表"画面离不开它"。当前 8 个模板的每一个参数都有默认值 ⇒
    全是 `false`：省掉任何参数都不会报错，画面就是模板自带的那一段。
-2. **缺字段 ≠ `false` / 空**：`requires`（如 `['music']`）与 `outputs` 是**留给 1-21 的位置** ——
-   给模板补声明式 `spec` 时才会出现。在那之前读到"没有这个键"，要理解成**"还没声明过"**，
-   不能当成"不需要"。反过来，1-21 落地时**只加字段、不改已有字段名** ⇒ 老的读者不会坏。
+2. **缺字段 ≠ `false` / 空**：`requires` 与 `outputs` 是 **1-21 补上的声明式 spec**
+   （`src/shots/*.js` 的 `xxxShot.spec`）—— 现在 8 个模板都有了。**没有 spec 的模板，这两个键
+   根本不出现**，读到"没有这个键"要理解成**"还没声明过"**，不能当成"不需要"。
+   1-21 只加字段、没改任何已有字段名 ⇒ `schema` 仍是 `anim.shots/1`，老的读者不会坏。
    （`required` 已经按同一条规矩设计：模板哪天去掉某个参数的默认值，它自动变成 `true`，
    `--json` 与这一节都不用改。）
+3. **`requires` 是"依赖"，不是"错误"**：消费它的是 `scripts/anim.mjs` 的 `cmdCheck`
+   （判据 `shotDependencyIssues()` / 报告 `shotDependencyReport()`）：模板要 `'music'` 而任务
+   **没配 `audio`** ⇒ 进 `errs`（这一段画面只能是黑的，退出码 1）；配了 `audio` 但还没跑
+   `analyze` ⇒ 进 `skipped`（"这一步还没跑"，默认不改退出码）。`'under'`（`whip` 要上一段的成帧）
+   **目前只是声明、还没接线** —— 交叠是时间线层的声明，静态文本扫描判不准，假报比不报更贵。
 
 - **确定性**：载荷只来自 `listShots()`，不含时间戳 / 随机 / 环境信息 ⇒ 同一份 `src/shots/`
   永远得到同一个字符串，可以直接 `diff`、可以当基线存。
