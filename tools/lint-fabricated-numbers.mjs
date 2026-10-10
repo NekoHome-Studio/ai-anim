@@ -538,12 +538,11 @@ function sourceFiles(taskDir) {
   return out;
 }
 
-/** 报告里的路径：相对仓库根，且一律用 `/`（Windows 上也是） */
-const rel = (p) => path.relative(ROOT, p).split(path.sep).join('/');
-/** 夹具根目录在仓库外时，`path.relative` 会得到一串 `../` —— 那种情况直接用绝对路径的正斜杠形式 */
+/** 报告里的路径：**只要在仓库里就一律相对仓库根**（Windows 上也用 `/`），
+ *  仓库外的（把 `--dir` 指到别处的夹具）才退回绝对路径 —— 两种形状都还能点进编辑器。 */
 const relOf = (p) => {
-  const r = rel(p);
-  return r.startsWith('..') ? p.split(path.sep).join('/') : r;
+  const r = path.relative(ROOT, p);
+  return (!r || r.startsWith('..')) ? p.split(path.sep).join('/') : r.split(path.sep).join('/');
 };
 
 function lintTask(name, tasksRoot = TASKS_DIR) {
@@ -653,6 +652,10 @@ const HELP = `lint-fabricated-numbers —— 检查"画面上的数字有没有�
   node tools/lint-fabricated-numbers.mjs --json          机器可读（退出码恒 0）
   node tools/lint-fabricated-numbers.mjs --max 0         明细不限条数（默认每个任务 12 个值）
   node tools/lint-fabricated-numbers.mjs --dir <目录>    换一个任务根目录（自测夹具用，默认 tasks/）
+
+自测（纯 JS，139 项）：node tools/test-fabricated-numbers.mjs
+  夹具在 tools/fixtures/lint-numbers/tasks/（正例 / 反例 / 混合 / 没有事实表 四个）——
+  改那个目录里的数字会让测试当场红，那是有意的：判据一放宽就必须被看见。
 
 判据 ①：只扫**数值显示位** —— 会真的画到帧上的字符串里的数字字面量：
   文字入口（type.write / writeLine / put / codeRow / caption / kicker / footer …）的文本、

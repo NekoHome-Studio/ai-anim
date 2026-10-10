@@ -795,6 +795,9 @@ tools/             诊断与回归脚本（probe-*.mjs / test-*.mjs / smoke-*.mj
   lint-narration-dup.mjs  静态检查：**画面文字逐字复述旁白**（"两条字幕"的元凶），报 file:line
   lint-fabricated-numbers.mjs 静态检查：**画面上的数字有没有出处**（查 tasks/<任务>/FACTS.md），报 file:line；
                    只扫"数值显示位"，没有 FACTS.md 的任务安静跳过（1-22；见 §10.10）
+  test-fabricated-numbers.mjs 上面那个工具的纯 JS 自测（139 项）：正例必须响 / 反例必须静 /
+                   **显示位条数钉死**（谁放宽判据当场红）/ 空 ≠ 干净 / 退出码三档。
+                   夹具在 `tools/fixtures/lint-numbers/tasks/`
   scene-harness.mjs  离线跑场：用假 ctx 把整条时间轴 render 一遍（抓未定义变量 / 确定性破例）
   test-style.mjs   风格包与字幕层的纯逻辑回归（含"不写 style 时像素不变"的底线断言）
   test-blocks.mjs  方块世界 kit 的纯 JS 回归（面朝向判据 / 深度排序 / 摄影机关键帧）
