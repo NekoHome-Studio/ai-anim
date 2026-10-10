@@ -114,11 +114,11 @@ node scripts/anim.mjs video 我的片子            # 出成片 → out/我的�
 | `at` | 绝对起点；不写 = 接在上一段之后（再减去 `overlap`）。也接受拍号 |
 | `overlap` | 与**上一段**重叠多少秒 = 转场；不写 = 0（硬切） |
 | `params` | 显式写模板参数。与节点上的散键合并，**`params` 优先** |
-| `post` | 这一帧的后处理参数（`AGENTS.md` §5 那张表）。⚠ 模板自己 `render()` 里 `return` 的 post 会盖过同名的键 |
-| `maxSamples` | 这一段自适应子帧数的**上限**（引擎取所有在播段里最小的那个，`src/core/engine.js`） |
+| `post` | 这一帧的后处理参数（`AGENTS.md` §5 那张表）。⚠ 模板自己 `render()` 里 `return` 的 post 会盖过同名的键（§3.1） |
+| `maxSamples` | 这一段自适应子帧数的**上限**（引擎取所有在播段里最小的那个，`src/core/engine.js`）。⚠ 只往下压，是**提速**旋钮，合法档 8 / 24 / 72 / 216（§3.1） |
 | `handlesTransition` | 这一段自己处理与上一段的衔接（`whip` 模板自带，一般不用写） |
 | `note` | 备注，只印在 `check` 的时间线表里，不影响画面 |
-| `world` / `worldPass` | 共享背景：`world: 'auto'`（= 用 `task.world`）、`worldPass: true` 同义。**配置档用不到**，见 §6 |
+| `world` / `worldPass` | 共享背景：`world: 'auto'` = "引擎铺底"（用 `task.config.mjs` 里 `export const world` 那张），`world: false` = "**这一段我刻意不铺底**"（背景守门会跳过它）。纯配置档里前者等于没写（没有 `task.world` 可解析），后者照旧生效 —— 见 §3.1 |
 
 **其余所有键都是模板参数**，会被原样交给 `shot(type, {…})`：
 
@@ -126,6 +126,75 @@ node scripts/anim.mjs video 我的片子            # 出成片 → out/我的�
 { type: 'chart', values: [0.3, 0.7, 0.95], title: '成绩', dur: 5 }   // 散键写法
 { type: 'chart', params: { values: [0.3, 0.7, 0.95] }, dur: 5 }      // 显式写法，等价
 ```
+
+### 3.1 三个"用法都在、以前没人用过"的字段：`post` / `world` / `maxSamples`
+
+这三个字段的转发是通的，但很长一段时间里 `tasks/` 下**一个真实用例都没有**，所以没人踩过它们的坑。
+可跑的完整例子：**`tasks/_config-lab/task.config.mjs`**（只有这一个文件，5 段、30.5 秒）：
+
+```sh
+node scripts/anim.mjs check  _config-lab
+node scripts/anim.mjs still  _config-lab -t 2,8,13,17,21,26.5,27.5
+node tools/scene-harness.mjs _config-lab          # 离线跑场，不需要 GPU / 浏览器
+```
+
+**① `post` —— 后处理。用法**：写在节点上，就是这一段的后处理参数（`AGENTS.md` §5 的表）。
+
+```js
+{ type: 'kinetic', dur: 7.5, post: { bloom: 0.6, tonemap: 'agx', exposure: 0.75 } },
+```
+
+⚠ **坑：模板 `render()` 里 `return` 的 post 会盖掉同名的键**（合并顺序是
+`{ …默认, …节点.post, …场景 return }`，`src/core/engine.js`）。上例里 `tonemap` 与 `exposure`
+生效（`kinetic` 不返回它们），而 **`bloom: 0.6` 被模板自己的 `bloom: 0.34` 静默盖掉** ——
+画面看上去"泛光没加强"，其余键却都对，一个字都不报。想只靠配置档加强泛光：做不到，
+要么回去写场景，要么挑模板没返回的键（`anim shots <模板名>` 看参数，模板的返回值读 `src/shots/<名字>.js` 末尾）。
+**`_config-lab` 第 4 段就是这一段的对照**：其余四段都不写 `post`（各自用模板自己的后处理），
+只有它是 `tonemap: 'agx'` + `exposure: 0.75`。
+
+**② `world` —— 共享背景。用法**：`world: 'auto'`（= `worldPass: true`）声明"底由引擎铺"；
+`world: false` 声明"**我刻意不铺底**"。
+
+```js
+{ type: 'chart', dur: 12.5, world: 'auto' },   // 声明引擎铺底（本任务是纯配置档 → 解析成 null，底由模板自带）
+{ type: 'whip',  dur: 2.5, overlap: 0.5, world: false },   // 刻意不铺底：整帧画面就是上一段的成帧（ctx.under）
+```
+
+⚠ **坑：`world: false` 是合法声明，不是"骗过 `check`"的开关。** 它的语义是
+"**这一段的整帧底由我自己负责，引擎别再加一层**"，背景守门（`worldAudit`）会跳过声明了它的段。
+所以别为了让它绿去画一笔没意义的全屏 Pass —— 那是把这个字段用成了谎话。
+两条容易误解的地方，都实测过（`anim audit _config-lab`）：
+
+- **守门只查"与前一段交叠"的段，而且每个这样的段只取一个时刻**（交叠窗的中点：
+  `it.start + span/2`，`src/app.js` 的 `worldAudit`）。所以 `world: false` 的可观测差异
+  要靠交叠才看得见；而被跳过的段**根本不在 `anim audit` 那张表里**。
+- **跳过不等于"这段没被看"**：`_config-lab` 的甩镜段（`world: false`）实际**照样被审了**——
+  它的交叠窗（0.5 秒）整个落在上一段里面，守门在中点取到的 `full` 是 1，于是它既在表里、也过关。
+  真正需要这条声明的是"拿不到上一帧"的那种布局（例如上一段已经结束，这一段只能黑底 + 速度线）。
+  ⚠ 顺带一个**盲区**：交叠窗之后的余下时间**没有任何守卫看着**（`_config-lab` 里是 16.5–18.5 那 2 秒），
+  那一段如果没拿到上一帧的成帧，画面会是黑的而不报错。
+- 在**纯配置档**里 `world: 'auto'` 等于没写：`export const world` 是手写场景那一路的东西
+  （`AGENTS.md` §3 的 `worldPass()`），没有它时 `resolveWorld()` 老老实实返回 `null` ——
+  8 个模板本来就各自铺满整帧，写它只是把意图写清楚。想让它真的生效，三条路：
+  ① 给任务一个 `export const world`（那就要有 `scenes/` 或至少一个模块）；
+  ② 写手写场景并用 `cut(scene, { world: 'auto' })`；
+  ③ 节点上直接给一个 world Pass 对象（`world: myPass`）—— 这是**这一段专用**的背景，
+  和手写场景那条路吃的是同一段引擎代码。
+
+**③ `maxSamples` —— 自适应子帧数的上限。用法**：给"最贵的那一段"封个顶。
+
+```js
+{ type: 'whip',    dur: 2.5, overlap: 0.5, maxSamples: 72 },   // 甩镜是全片动得最快的：封顶 72
+{ type: 'kinetic', dur: 7.5, maxSamples: 24 },                 // 逐像素噪声的底：封顶 24 = 这一段变快、画面略粗
+{ type: 'outro',   dur: 3.5, maxSamples: 216 },                // 合法顶档 = 不封顶（引擎自己的 MAX_SAMPLES 就是 216）
+```
+
+⚠ **坑：它只把上限往下压 —— 是提速旋钮，不是"加密采样"，写大了不会更细。**
+合法档只有 **8 / 24 / 72 / 216**（`8 × 3^L`：引擎先 `Math.min(216, item.maxSamples)`、
+再 `Math.max(8, …)`，最后取能落到的那一档，`src/core/engine.js`）。
+写 `maxSamples: 64` 会被**夹到 24**：画面**更粗**、渲染**更快**，而且一个字都不报。
+想让拖影更细要调**小** `--tol`（自适应容差，默认 2.5），不是把这个数调大。
+（它的效果只在多子帧那条路上看得见：`--samples 1` / `still` 单帧路径根本不走自适应采样。）
 
 ### 写错会怎样：抛错，并点名
 
@@ -274,9 +343,13 @@ timeline: [
 - ⚠ **文字量大的画面不要交叉溶解**：两屏字叠在一起会糊（`AGENTS.md` §4.5）。
   要么硬切（不写 `overlap`），要么让它"走掉"—— 用 `whip`，或者回去写场景用
   `src/core/trans.js` 的 `transitionPass` / `enterOffset`。
-- **配置档不需要 `world` / `worldPass`**：8 个模板都自带整帧背景（各自的背景 Pass 或
+- **配置档一般不需要 `world` / `worldPass`**：8 个模板都自带整帧背景（各自的背景 Pass 或
   `gl.clear` 到 `P.ink`），写上去只是多铺一层马上被盖掉的底。共享背景是给**手写场景**用的
   （`cut(scene, { world: 'auto' })`，见 `AGENTS.md` §3）。
+  两个例外（细节与坑见 §3.1）：**`world: false` 在配置档里是有意义的**（"这一段我刻意不铺底"，
+  背景守门会跳过它，例如 `whip` —— 它的整帧画面就是上一段的成帧）；
+  而**同一条时间线里混了手写场景**、并且 `task.config.mjs` 里有 `export const world` 时，
+  配置档节点写 `world: 'auto'` 会真的拿到那张共享背景（"切镜头时世界不跳"）。
 
 ---
 
@@ -360,7 +433,9 @@ node tools/test-shots.mjs      # 镜头库的登记 + 文档一致性 + 报错�
 | 画面全黑（只有 `wave`/`pulse`/`grid` 的段） | 没配 `audio`（`ctx.music` 为 `null`），或分析数据不在 | ① 在 `task.config.mjs` 里配 `audio: './audio/x.mp3'` ② `node scripts/anim.mjs analyze <任务>` ③ `node scripts/anim.mjs still <任务> -t <这一段中间的时刻>`，再用 Read 看图 |
 | 时长不对（每段都成了 4 秒） | 忘了写 `dur`（默认就是 4 秒） | `node scripts/anim.mjs check <任务>` 会把时间线逐段印成「段名 / 时长 / 起止」，一眼能看出是不是全 4 秒 |
 | 段名出现 `title_2` `title_3` | 同一种模板在一支片子里用了几次，不写 `id` 时都用模板默认段名 | 需要区分就给每段显式写 `id`；`check` 的时间线表里看得到最终段名 |
-| 时间线里写的 `post` 好像没生效 | 模板 `render()` 里 `return` 的 post 会**盖过**同名的键（合并顺序是 `{…默认, …item.post, …场景 return}`，`src/core/engine.js`） | 只写模板没设的键；或在 `still` 出图前后各来一张对比：`node scripts/anim.mjs still <任务> -t <时刻>` |
+| 时间线里写的 `post` 好像没生效 | 模板 `render()` 里 `return` 的 post 会**盖过**同名的键（合并顺序是 `{…默认, …item.post, …场景 return}`，`src/core/engine.js`） | 只写模板没设的键；或在 `still` 出图前后各来一张对比：`node scripts/anim.mjs still <任务> -t <时刻>`。可跑的例子见 §3.1 与 `tasks/_config-lab/` |
+| 写了 `maxSamples: 64`，画面反而更粗 | 它不是"加密采样"，是自适应子帧数的**上限**，且只取 `8 / 24 / 72 / 216` 这几档 —— 64 被夹到 24 | 想让拖影更细：调**小** `--tol`（默认 2.5）；想让某段变快：这才写 8 / 24。见 §3.1 |
+| 背景守门把某一段"漏掉"了 | 那一段写了 `world: false`（= "我刻意不铺底"，守门按设计跳过它）；或它**没有与前一段交叠**（守门只查交叠段） | `node scripts/anim.mjs audit <任务>` 看每个交叠段实际画了什么；被跳过的段不在那张表里，属正常 |
 | 改了配置但预览没变 | `npm run dev` 的预览服务看不到**新建的**任务目录 | 重启预览服务；CLI 渲染不受影响 |
 | 出片/出图期间改了配置 | `task.config.mjs` **在** Vite 的模块图里，改它会触发重载、打断渲染 | **渲染期间一个文件都别写**（`docs/*.md` 也不行 —— 编辑器的原子写会留下**不以 `.md` 结尾**的 `.tmpdir/…tmp`，`vite.config.mjs` 的 `watch.ignored` 挡不住，撞 `EBUSY` 会让 Vite 进程直接崩、渲染报 `ERR_CONNECTION_REFUSED`）。唯一被实测挡住的是 **`out/**`**：并发产出先落 `out/_staging/`（`AGENTS.md` §7 / `docs/STATUS.md` §14.5） |
 
