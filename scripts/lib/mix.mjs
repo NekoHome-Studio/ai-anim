@@ -21,7 +21,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { decodeChannels, decodeMono, encodeMp3, normalize, probeDuration, readTaskAudioSpec, taskRel, writeWav16 } from './media.mjs';
+import { assessLoudness, decodeChannels, decodeMono, encodeMp3, formatLoudness, measureLoudness, normalize, probeDuration, readTaskAudioSpec, taskRel, writeWav16 } from './media.mjs';
 
 /** beast 那一版实测的默认值 —— 改这些之前先听一遍，别凭感觉调。 */
 export const DEFAULT_DUCK = {
@@ -210,6 +210,24 @@ export function runMix(task, opts) {
   writeWav16(wav, [L, R], sr);
   encodeMp3(wav, mp3, opts.bitrate);
   const dur = probeDuration(mp3);
+
+  /**
+   * 音频的**数字守门**（BACKLOG 1-20）——「你听不见，就报数字」。
+   * 只报，**不 gate、不自动归一化**：归一化会改动所有带旁白片子的音轨 = 已交付片子全部重出。
+   * 它 spawnSync 跑 ffmpeg（约 3s/分钟），放在这里是因为 `mix` 本来就是 CLI 侧一次性的批处理步骤。
+   */
+  try {
+    const t0 = Date.now();
+    const m = measureLoudness(mp3);
+    const a = assessLoudness(m);
+    log(`  响度 ${formatLoudness(m)}  ${a.tier === 'ok' ? '✓' : a.tier === 'warn' ? '⚠' : '✗'} ${a.verdict}`);
+    if (a.tier === 'error') {
+      log(`    靶子是 ${m.target.i} LUFS / ${m.target.tp} dBTP（主流平台归一化目标）—— 只报数字，不动音轨。`);
+    }
+    log(`    （量了 ${((Date.now() - t0) / 1000).toFixed(1)}s；4 分钟的轨约 12s）`);
+  } catch (e) {
+    log(`  ⚠ 响度没量成（${e.kind}）：${String(e.message).split('\n')[0]}`);
+  }
 
   const rel = (f) => path.relative(taskDir, f).replace(/\\/g, '/');
   log(`✓ ${path.relative(process.cwd(), mp3)}  ${dur.toFixed(2)}s  ${timing.scenes?.length ?? 0} 段`);

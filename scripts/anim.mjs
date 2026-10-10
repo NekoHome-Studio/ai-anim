@@ -1548,6 +1548,24 @@ async function cmdCheck() {
     const tracks = resolveAudioTracks(task);
     if (tracks.analysisSource) log(`音频：${tracks.note}`);
 
+    // 音频的数字守门（1-20）：你听不见，就报数字。放在这里是因为它 spawnSync 会阻塞事件循环，
+    // 绝不能夹在渲染会话中间（渲染靠 stdin 控制通道）。
+    if (tracks.packaging) {
+      const { measureLoudness, formatLoudness, assessLoudness } = await import('./lib/media.mjs');
+      const t0 = Date.now();
+      try {
+        const m = measureLoudness(tracks.packaging);
+        const a = assessLoudness(m);
+        log(`响度：${formatLoudness(m)}（packaging = ${path.basename(tracks.packaging)}，真峰=true peak）`
+          + `  ${a.tier === 'ok' ? '✓' : a.tier === 'warn' ? '⚠' : '✗'} ${a.verdict}`);
+        if (a.tier === 'error') warn(`  → 靶子是 ${m.target.i} LUFS / ${m.target.tp} dBTP（主流平台归一化目标）。`
+          + `这一条只报数字、不自动归一化 —— 归一化会改动所有带旁白片子的音轨，等于已交付片子全部重出。`);
+        log(`  （量了 ${((Date.now() - t0) / 1000).toFixed(1)}s；4 分钟的轨约 12s）`);
+      } catch (e) {
+        warn(`⚠ 响度没量成（${e.kind}）：${String(e.message).split('\n')[0]}`);
+      }
+    }
+
     // 风格包与字幕层（docs/STYLE.md / docs/CAPTIONS.md）—— 这两件事以前"没有任何入口"，
     // 于是每支片子都长得像上一支、而语音字幕干脆不在引擎里（出锅之后才用 ffmpeg 烧）。
     // check 把它们打出来，是为了让"这支片子长什么样"变成一件**看得见**的事。
