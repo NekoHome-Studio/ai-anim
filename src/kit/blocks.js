@@ -20,7 +20,7 @@
  *
  * 这三件凑齐，一片线框才会变成"一叠积木"。少任何一件，画面就退回"半透明水晶"。
  *
- * ## ⚠ 那段历史：`facesToward()` 的判据曾经是**反的**（`docs/IMPROVEMENTS-4.md` §4.2）
+ * ## ⚠ 那段历史：`facesToward()` 的判据曾经是**反的**（`docs/history/IMPROVEMENTS-4-5.md` §4.2）
  *
  * 两份任务侧的 `_world.js` 里写的都是：
  *
@@ -170,7 +170,7 @@ export function pickColor(P, name, fallback = 'bone') {
  * 为什么要抛而不是回退：原型里 `P.slab` / `P.slabHi` 是**任务自己的**调色板覆盖
  * （`task.config.mjs` 的 `palette: { slab: '#46586a', slabHi: '#7d9cb0' }`），
  * 一旦下一支片子忘了写这两个名字，`?? P.bone` 会让整片世界**白得发亮** ——
- * 不报错、不崩溃，只是"看起来不对"，属于最难查的那一类（`docs/IMPROVEMENTS-4.md` §7）。
+ * 不报错、不崩溃，只是"看起来不对"，属于最难查的那一类（`docs/history/IMPROVEMENTS-4-5.md` §7）。
  *
  * @param {Record<string, number[]>} P @param {string} name @param {string} why 报错里点名的位置
  * @returns {number[]}
@@ -313,7 +313,7 @@ export function solidityAt(p, box) {
  * 老实现把它乘进**颜色第 4 个分量**，于是"远处压暗"变成了"远处变透明" ——
  * 而 `LineBatch` 没有深度测试、填充是一排线拼的：`alpha < 1` 时排线之间的发丝缝
  * 会把后面的 section 透出来。实测后果是**整片世界读成一块半透明水晶**，
- * 正是 `docs/IMPROVEMENTS-4.md` §4.3 / §4.2 那两条要解决的观感问题。
+ * 正是 `docs/history/IMPROVEMENTS-4-5.md` §4.3 / §4.2 那两条要解决的观感问题。
  *
  * 所以现在只提供**一个**系数，由调用方乘进 RGB（`depthTint`），**不再碰 alpha**：
  * 远处仍然退得下去（暗），但永远不透明。

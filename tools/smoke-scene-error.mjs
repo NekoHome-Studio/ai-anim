@@ -1,6 +1,6 @@
 // P0-3 回归（注入式）：**场景 render 抛异常必须是硬失败**，而且画面必须一眼看出是崩了。
 //
-// 背景（docs/IMPROVEMENTS-2.md P0-3）：做 beast 时 `scenes/outro.js` 里
+// 背景（docs/history/IMPROVEMENTS-1-3.md P0-3）：做 beast 时 `scenes/outro.js` 里
 //     const slot = ctx.params?.slot;   // 遮蔽了 _kit.js 的 slot() 画格子函数
 // 于是包裹卡片一画就 TypeError。引擎 catch 住，把整帧涂成**暗红 (0.15,0,0)**，
 // 文字图形全无 —— 而 `check` 三处采样全绿、控制台一个字都没有、

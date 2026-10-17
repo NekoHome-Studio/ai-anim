@@ -37,7 +37,7 @@ import { Pass, RT } from './gl.js';
  *                                 是**物理**分辨率，所以 `--scale 2`（4K）下同样数值的视觉位移只有
  *                                 1080p 的一半。要跨分辨率一致就自己乘 `scale`。
  *                                 （`docs/ENGINE.md` §5 的 post 表里写的就是这条；曾经这里的
- *                                 JSDoc 误写成"逻辑像素"，与实现矛盾 —— 见 IMPROVEMENTS-3 建议 D。）
+ *                                 JSDoc 误写成"逻辑像素"，与实现矛盾 —— 见 docs/history/IMPROVEMENTS-1-3.md 建议 D。）
  * @property {number} zoom         画面缩放（1 = 不变，>1 推近）
  * @property {number} flash        整帧加白（0..1）
  * @property {number} fade         整帧变黑（0..1）

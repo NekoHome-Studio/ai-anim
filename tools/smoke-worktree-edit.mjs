@@ -1,6 +1,6 @@
 // P2-2 回归：渲染期间改动工作区。
 //
-// 背景（docs/IMPROVEMENTS-2.md P2-2）：私有 Vite 的 `watch.ignored` 原来只有 `**/out/**`，
+// 背景（docs/history/IMPROVEMENTS-1-3.md P2-2）：私有 Vite 的 `watch.ignored` 原来只有 `**/out/**`，
 // 于是**长渲染（25–60 分钟）期间连往 docs/ 写一个 markdown 都不敢** ——
 // 文件一改就 HMR 重载页面、WebSocket 断流、推帧提前结束，而 CLI 还报 ✓
 // （历史症状：2880 帧的片子被截成 152 帧）。

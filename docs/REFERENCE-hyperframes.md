@@ -668,7 +668,7 @@ hyperframes 有两条路：引擎的 `motionBlur` 渲染选项与 `motion-blur` 
 
 > "**Blast radius — it silences more than the overflow audit.** The attribute is inherited down the subtree (the perception probe walks ancestors), so it also suppresses the rendered-perception checks `text-clipping`, `content-cramped-container`, and `foreground-over-panel` for every descendant."
 
-**"豁免会静默地多关掉几条别的检查"**——anim 应该引以为戒。anim 已有的 `world: false`（合法声明"这一段我刻意不铺底"，背景守门会跳过）就是这类豁免，它的范围是**受控的**（只关背景守门）。**如果将来要加更多豁免，必须像 hyperframes 一样明确写出"这个豁免还会关掉什么"。**
+**"豁免会静默地多关掉几条别的检查"**——anim 应该引以为戒。anim 已有的 `world: false`（合法声明"这一段我刻意不铺底"，背景守门会跳过）就是这类豁免，它的范围是**受控的**：只关掉背景守门里"**这一段铺没铺底**"那一条判据，而且 2026-10-16 起**连读数都不关**（`worldAudit()` 把这些段放进返回值的 `selfBase` 那一栏，照样打两个采样时刻的整帧覆盖次数与亮度 —— BACKLOG 头部 ⑦）。**如果将来要加更多豁免，必须像 hyperframes 一样明确写出"这个豁免还会关掉什么"。**
 
 ### 5.7 13 个 frame preset
 

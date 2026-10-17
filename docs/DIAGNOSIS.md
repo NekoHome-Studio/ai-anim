@@ -33,7 +33,7 @@
 | `镜头模板依赖：扫了 N 个文件，用到 M 个模板（a / b）` + `  <模板> 需要 music + analyze    <file>:<line>` + `  <模板>：没有声明任何依赖（requires: []）`<br>`scripts/anim.mjs` 的 `shotDependencyReport()` | 正常那一档：谁需要什么、在**哪个文件哪一行**用到。`requires: []` 的模板不需要任何前置 | 无事。要改依赖就改模板自己的 `spec.requires`（看某个模板：`node scripts/anim.mjs shots <名字> --json`；契约：`docs/ENGINE.md` §14.9） |
 | `  ✓ 声明的依赖都满足（music = … · analyze = …）` / `  ✓ 能查的那几条依赖都满足（…）`<br>`scripts/anim.mjs` 的 `shotDependencyReport()`（源码里是**同一个模板串**：`` ✓ ${ungated.length ? '能查的那几条依赖' : '声明的依赖'}都满足 ``，所以 grep 要搜 `都满足`） | 已接线的依赖（当前是 `music` / `analyze`）都满足。⚠ 有没接线的令牌时它会说"**能查的那几条**"，别读成"全都满足" | 无事；下一行还会列出没接线的令牌（见下一条） |
 | `⚠ 镜头模板声明的依赖有 N 项没满足（X 项是**画面不可能是对的**硬问题，Y 项是"这一步还没跑"）：` + `  ✗ [<file>:<line>] <message>` + `  → <fix>`<br>`scripts/anim.mjs` 的 `shotDependencyReport()` / `shotDependencyIssues()` | 模板声明的前置没满足。两档严重性：**硬问题进 `errs`（退出码 1）**；"这一步还没跑"进 `skipped`（默认不改退出码） | 照 `→` 那行的命令做。典型两条：`模板 "wave" 读 ctx.music…但这支任务**没有配 audio**…引擎给场景的是 SILENT（空音乐），这一段的画面只能是黑的` ⇒ `task.config.mjs` 加 `audio: './audio/xxx.mp3'` 再 `analyze`；`模板 "grid" 读音频包络，但还没有**预计算**的音频分析数据…` ⇒ `node scripts/anim.mjs analyze <任务>` |
-| `  ⚠ 'under' 这一条**还没接线**：这次没有验它（交叠是时间线层的声明，静态扫描判不准 —— 假报比不报更贵，见 docs/ENGINE.md §14.9 读法 3）`<br>`scripts/anim.mjs` 的 `shotDependencyReport()`（`SHOT_DEP_GATED` 之外的都是"没接线"） | 「空 ≠ 干净」的第三个面：这个令牌**引擎还没实现校验**，所以它既不进 `errs` 也不进 `skipped`（对每个用 `whip` 的任务都一样，塞进 skipped 会让 `--strict` 永远红、把真正的"这次没跑"淹掉） | 无事可修 —— 但**不许把它读成"验过了"**。真要用交叠就去 `still` / `video` 看那一段（`docs/ENGINE.md` §14.9 读法 3） |
+| `  · 'under' 是**时间线层**的依赖（交叠够不够），这一步判不准 —— 它在时间线展开之后由**段级审计**查（2026-10-16 接线，BACKLOG 头部 ②），见下面「依赖 under」那一段；那一段没有出现就是**没验**（docs/ENGINE.md §14.9 读法 3）`<br>`scripts/anim.mjs` 的 `shotDependencyReport()`（`SHOT_DEP_GATED` 之外、但属于「换到别处查」的令牌 —— 当前是 `under`） | 「空 ≠ 干净」的第三个面（**2026-10-16 起它换了一种形态**）：这个令牌**不在这两步里**查，所以它既不进 `errs` 也不进 `skipped`（对每个用 `whip` 的任务都一样，塞进 skipped 会让 `--strict` 永远红、把真正的"这次没跑"淹掉）。⚠ 但它**已经接线了** —— 说成"还没接线"是假话，说成"验过了"也是假话 | 往下看 `check` 输出里紧跟的「依赖 under」那一段（那就是它的判据）；只挑一段看（`--only`）时它必然报"没判"—— 那是**没验**，不是通过 |
 | `  （--only x 只挑了几段试渲染；这一项是**整个任务**范围的静态扫描）`<br>`scripts/anim.mjs` 的 `shotDependencyReport()` | 你加了 `--only` ⇒ 依赖校验**没有**跟着缩小范围（它永远是全任务静态扫描） | 无（说明行）。这一项的可信度不受 `--only` 影响，试渲染那部分才是缩小的 |
 | `  （依赖来自模板自己的 spec.requires —— 看某个模板：node scripts/anim.mjs shots <名字> --json；契约：docs/ENGINE.md §14.9）`<br>`scripts/anim.mjs` 的 `shotDependencyReport()` | 这一段的收尾指路 | 照它查：`node scripts/anim.mjs shots <名字> --json`；契约在 `docs/ENGINE.md` §14.9 |
 | `（镜头模板依赖校验没跑成：…）`<br>`scripts/anim.mjs` 的 `cmdCheck`（catch 分支，同时 `pushSkipped(SHOT_DEP_WHAT, …)`） | ⚠ 这一项**没跑成**（静态扫描起不来）—— 「空 ≠ 干净」：不许把"没报错"读成"依赖都对" | 看括号里的原因；`skipped:` 段里也会有一条 `镜头模板依赖（spec.requires）：静态扫描起不来：…` |
@@ -70,6 +70,17 @@
 | `浏览器控制台：`<br>`scripts/anim.mjs:1414` | 页面里的 console 输出（含 `[pageerror]`） | `[pageerror]` 一律算失败（`:1417`）；场景里的 TypeError 会先在这里露出来 |
 | `✓ 接触表 out/<任务>/check/contact.png`<br>`scripts/anim.mjs:1411` | `check --sheet` 出的接触表 | 用 Read 工具打开那张图看全片；或用 `sheet` 单独出 |
 
+| `⚠ 依赖 under：N/M 段声明要读 ctx.under，却**与上一段没有交叠**` + `  [<段>] 第 N 段 a → bs：与上一段没有 overlap` + 紧跟四行说明<br>`scripts/anim.mjs` 的 `cmdCheck`（「依赖 under」那一段；判据是纯函数 `src/timeline.js` 的 `auditUnderRequires()`，单测 `tools/test-timeline-audit.mjs`） | 🚨 **硬问题**（进 `errs` ⇒ 退出码 1）：`ctx.under` 只在两段交叠的那一小段里有值（`engine.js`：`under: k > 0 ? under : null`）。没有交叠 ⇒ 模板退回"没有 under"那条分支 ⇒ **画面几乎是黑的，而且一个字都不报** | 给这一段写 `overlap`（`{ type: 'whip', dur, overlap: 0.5 }` 或 `cut(whip, { overlap: 0.5 })`），或者换成自己铺底的模板。判据与边界：`docs/ENGINE.md` §14.9 |
+| `依赖 under：N 段声明要读 ctx.under，都真的与上一段交叠了`<br>同上 | 正常那一档（正面）：声明的依赖真的满足了 | 无（这是唯一可以读成"这一项验过了"的一行） |
+| `依赖 under：这次**没有可查的对象**（时间线 N 段里没有哪一段声明要读 ctx.under）—— 不是"依赖都对"`<br>同上 | ⚠ 「空 ≠ 干净」：这个任务没有用转场类模板（或手写场景没声明 `requires`）⇒ **没有可查的对象**，不是"交叠都对" | 无（说明行）。真用了 `whip` 却看到这一行，说明它不在时间线里（或在 `--only` 范围外） |
+| `⚠ 依赖 under：N 段**没判**（它在展开后的时间线里是第 1 段，没有"上一段"可比）：<段名>` + `  → 这不是通过：--only 会把选中的段平移到时间轴开头`<br>同上（进 `skipped` 的 `依赖 under（段级审计）`） | ⚠ **没验**：第 1 段没有"上一段"可比 ⇒ 判不了（`--only` 时必然出现；`--strict` 会把它当失败） | 想验它就跑整片（不要 `--only`）；只挑一段时按"这一项没验"写报告 |
+| `（依赖 under 的段级审计不可用：…）`<br>同上（catch 分支，同时 `pushSkipped`） | ⚠ 这一项**没跑成**（页面失联 / 时间线里没有 `requires` 可读） | 看括号里的原因；`skipped:` 段里也会有一条 |
+| `⚠ 依赖 under：N 段读了 ctx.under，却没声明 handlesTransition（<段名>）`<br>同上 | ⚠ 观感问题（不是"没画"）：引擎会在这上面**再叠一次交叉溶解**（`engine.js` 的 `k > 0 && !scene.handlesTransition`）⇒ "甩走"被稀释成两屏叠一起 | 场景或时间线上写 `handlesTransition: true`（`whip` 模板自带，不用写） |
+| `背景守门：N 个交叠段（各采交叠窗中点 + 窗后中点两个时刻）都铺满了整帧背景（其中 M 段声明了转场/共享背景）` + `；另有 K 段声明了 world: false（不判铺底，读数见上）`<br>`scripts/anim.mjs` 的 `cmdCheck`（背景守门那一段；采样计划是纯函数 `src/timeline.js` 的 `planWorldAudit()`） | 正面：每个交叠段在**交叠窗中点**都真的画了整帧覆盖。**2026-10-16 起每段采两个时刻**（交叠窗中点 + 窗后中点）—— 以前只有前者，"交叠窗之外那一秒"连个数字都没有（BACKLOG 头部 ⑦）。⚠ **判据只在第一个点**：窗后中点只做读数（转场模板在窗后走"没有 under"的分支，本来就可能是近黑的 —— 把判据也压上去会当场假报 `check demo`，实测踩过） | 无。想看每个时刻的读数：`node scripts/anim.mjs audit <任务>` |
+| `背景守门（world: false 的段，**不判铺底**，只给读数）：N 段` + 逐段两个时刻的整帧覆盖次数与亮度 + `⚠ 其中有 N 段是**转场段**，却采到了"一片黑"（mean < 0.004）`<br>同上 | `world: false` = "整帧底我自己负责" ⇒ **不判它铺没铺底**；但**读数照给**（以前这类段连一行都没有）。⚠ 如果它是**转场段**（自带 `handlesTransition`）又采到全黑（< 0.004），只 **warn**、不进 `errs`（窗后点不是判据点） | 读数里亮度很低先别慌：甩镜尾巴本来就是 0.051（模板设计）。整帧 < 0.004 才是错的 —— 去看那一帧：`still <任务> -t <时刻>` |
+| `⚠ 音频分析：还没有预计算的分析数据（… 不存在），` + `而这台机器上**没有 ffmpeg** ⇒ 这一步连补都补不了` + `  → 装 ffmpeg（或用 ANIM_FFMPEG 指定），再跑 node scripts/anim.mjs analyze <任务>`<br>`scripts/anim.mjs` 的 `cmdCheck`（进 `skipped` 的 `音频分析（analyze）`） | ⚠ **没验**（BACKLOG 头部 ④）：`check` 自己不跑 `analyze`，而这台机器上连补都补不了 ⇒ 画面不会踩拍子（`f.beat` / `f.a` 全是 0） | 装 ffmpeg（或 `ANIM_FFMPEG`）后跑 `node scripts/anim.mjs analyze <任务>`；`--strict` 会把这一条当失败 |
+| `⚠ 音频分析**没做出来**（no-ffmpeg：没有 ffmpeg（装一个，或用 ANIM_FFMPEG 指定一个包装器））——` + `    这一次渲染里 f.beat / f.a 全是 0：镜头对不上拍子，但成片不会有别的错。`<br>`scripts/anim.mjs` 的 `cmdVideo`（跟着 `analyzeTaskAudio()` 的返回值走） | 出片路径的同一件事：`analyzeTaskAudio()` 现在返回 `{ file, skipped, message }`（以前是裸 `null`，调用方分不清"没有音频"与"没有 ffmpeg"） | 装 ffmpeg / 指定 `ANIM_FFMPEG`；⚠ 这不是"出片失败"——片会出，只是不踩拍子 |
+
 ### 1.2 静态扫描：铁律违规（`check` 第一步 & `scene-harness`）
 
 | 输出词 | 含义（什么情况下会看到它） | 修法 |
@@ -88,7 +99,7 @@
 |---|---|---|
 | `tasks/<任务>/task.config.mjs 的时间线不合法：`<br>`src/tasks.js:173` | 时间线构建失败的最外层包装（带文件名） | 读它下面那几行——真正的判据在 `src/timeline.js` |
 | `timeline[i] 这一段（type: "…"）取不到镜头模板：`<br>`src/timeline.js:79` | 配置档节点写错（模板名或参数名） | 报错里就列了可用模板 / 可用参数；`node scripts/anim.mjs shots <名字>` 查参数与默认值。`AGENTS.md` §3.2 |
-| `未知的镜头模板 "x"。可用的：title / chart / …（看参数：node scripts/anim.mjs shots <名字>）`<br>`src/shots/index.js:86` | 模板名拼错 | 照行内命令查；只有 8 个模板（`src/shots/`） |
+| `未知的镜头模板 "x"。可用的：title / chart / …（看参数：node scripts/anim.mjs shots <名字>）`<br>`src/shots/index.js:86` | 模板名拼错 | 照行内命令查；只有 11 个模板（`src/shots/`） |
 | `镜头模板 "x" 没有参数 "y"（大概是拼错了）。可用参数：…`<br>`src/shots/index.js:95` | 参数名拼错（`value` vs `values`） | 照可用参数改；**这是刻意的抛错，不是静默吃默认值**（见 `src/shots/index.js:22`） |
 | `时间线里不能混写「配置档节点」和「已经展开好的段」`<br>`src/timeline.js:265` | 同时写了 `{ type: 'chart', … }` 和手搓的 `{ id, scene, start, end }` | 统一成一种写法：都写配置档，或者都写 `cut()` / `seq()` |
 | `你是不是忘了调 cut()？`<br>`src/timeline.js:324` | 时间线里塞了一个既不是 `cut()/seq()/par()` 返回值、也不是配置档节点、又没有时长的对象 | 补 `cut(scene, { dur })` |
@@ -146,7 +157,7 @@
 | `✓ N 帧全部与基线一致（画面没有被改动）`<br>`scripts/anim.mjs:1666` | 重构没动画面 | 无事 —— 这是"证明画面没变"的正确方式（比人眼看图可靠） |
 | `没有基线文件 out/…。先跑一次 --save。`<br>`scripts/anim.mjs:1647` | `--baseline` 但还没存过基线 | `node scripts/anim.mjs hashes <任务> --every 2 --save`（重构**之前**跑） |
 | `基线装不下：已经攒到 NMB（上限 380MB）…→ 采样放稀：--every X`<br>`scripts/anim.mjs:1702`（`cmdHashes`） | 基线是单个 JSON，顶到 V8 字符串上限 | 照提示放稀采样（`--every`），或改用 `--times` 只挑每段中间时刻 |
-| `✗ 有 N 个时刻在两种渲染顺序下不一致 —— 引擎里有跨帧状态（见 docs/IMPROVEMENTS.md 的确定性一节）`<br>`scripts/anim.mjs:1804`（`cmdProbe`） | `probe`：正着渲一遍、倒着渲一遍，同一 t 指纹不同 | 引擎里藏了跨帧状态（渲染目标残留 / 惰性编译 / 缓冲没清）。需要定位序列差异时用 `determinism`。⚠ 这条信息里的 `docs/IMPROVEMENTS.md` 已归档，真路径见 §5 |
+| `✗ 有 N 个时刻在两种渲染顺序下不一致 —— 引擎里有跨帧状态（见 docs/history/IMPROVEMENTS-1-3.md 第二轮 P1-2「同一时刻、从不同起点开渲结果不同」）`<br>`scripts/anim.mjs:1804`（`cmdProbe`） | `probe`：正着渲一遍、倒着渲一遍，同一 t 指纹不同 | 引擎里藏了跨帧状态（渲染目标残留 / 惰性编译 / 缓冲没清）。需要定位序列差异时用 `determinism`。⚠ 这条信息以前指向已归档的 `docs/IMPROVEMENTS.md`，**2026-10-16 起改成真路径**（BACKLOG 头部 ⑨） |
 | `✓ 渲染顺序不影响结果（同一 t 是纯函数）`<br>`scripts/anim.mjs:1787` | `probe` 通过 | 无事 |
 | `✗ 存在跨帧依赖 —— 见上面"⚠ … 不同"的那几行：那就是根因所在。` + `第一个分叉在第 N 帧（t=…）`<br>`scripts/anim.mjs:1902` `:1871`（`cmdDeterminism`） | `determinism`：顺向 / 反向 / 单次 seek 三种序列不一致 | 看被点名的那一帧的 `samples / lastErrors / post / a` 哪一项不同 —— 那就是根因。这是 P1-2 的定位实验，别当成"偶发" |
 | `差分（samples=1）  阈值：>8 与 >32 的像素占比`<br>`scripts/anim.mjs:1604`（`cmdDiff`） | `diff`：同一时刻渲两次差多少 | ⚠ **`diff` 只打印、不判定、退出码恒 0**（见 §3）—— 要判"变了没有"用 `hashes --baseline` |
@@ -162,8 +173,8 @@
 | `⑤⑥ 数值型 alpha 用例没有拿到读数  → FAIL`<br>`scripts/anim.mjs:2245` | 用例没跑起来（不是"alpha 对"） | ⚠ 这是**没验**不是通过；看上面的异常输出 |
 | `⑦⑧⑨ 旁白用例没有拿到读数（…）  → FAIL`<br>`scripts/anim.mjs:2271` | 旁白接线用例没跑起来 | 同上；正常时 ⑦⑧⑨ 会分别打印 `lines=` / `p=` / `peak` |
 | `✗ alpha 没有随 t 动画 —— 检查 src/core/text.js 里 k 的计算条件`<br>`scripts/anim.mjs:2275` | ①②③④ 有一项失败 | 照提示看 `src/core/text.js`；`docs/history/IMPROVEMENTS-1-3.md`（原 IMPROVEMENTS P1-3） |
-| `✗ 数值型 alpha 语义不对（IMPROVEMENTS-2 P0-1）—— …检查 text.js 里 alphaIsRamp / constAlpha 两行`<br>`scripts/anim.mjs:2279` | ⑤⑥ 失败 | 照提示看那两行；这是"数值 alpha 必须是常量"的判据 |
-| `✗ 旁白层接线有问题（IMPROVEMENTS-2 P1-5）—— 检查 engine.load 有没有收到 narration、_ctxFor 有没有把 this.narration 挂到 ctx 与 f 上`<br>`scripts/anim.mjs:2284` | ⑦⑧⑨ 失败 | 照提示查那两处接线；`docs/NARRATION.md` |
+| `✗ 数值型 alpha 语义不对（docs/history/IMPROVEMENTS-1-3.md 第二轮 P0-1）—— …检查 text.js 里 alphaIsRamp / constAlpha 两行`<br>`scripts/anim.mjs:2279` | ⑤⑥ 失败 | 照提示看那两行；这是"数值 alpha 必须是常量"的判据 |
+| `✗ 旁白层接线有问题（docs/history/IMPROVEMENTS-1-3.md 第二轮 P1-5）—— 检查 engine.load 有没有收到 narration、_ctxFor 有没有把 this.narration 挂到 ctx 与 f 上`<br>`scripts/anim.mjs:2284` | ⑦⑧⑨ 失败 | 照提示查那两处接线；`docs/NARRATION.md` |
 | `✓ alpha 语义全对（数组型随 t 动画 P1-3、数值型是常量 P0-1）+ 旁白层已接通（P1-5）`<br>`scripts/anim.mjs:2289` | 九条全过 | 无事 |
 
 ### 1.8 抖动体检（`anim shake`，`video` 收尾共用同一套判据）
@@ -200,6 +211,19 @@
 | `拒绝把时长 <dur> 的句子当成功（0 时长混进时长表会让 slot 静默算错）—— 查 <文件>`<br>`scripts/lib/say.mjs` 的 `buildLineResult()`（`solveTiming()` 那道 `dur > 0` 判据的上游守门） | 驱动返回了 `dur <= 0` / 非有限值 ⇒ 这一句被**判失败**（不是"成功合成了一句空话"） | 查那个文件的那一句：多半是驱动没写出音频（0 字节）。处理方式同上一条（它会进补跑清单，最终失败就退出码 1） |
 | `    · [<段>] 第 N 句「原句」 —— <原因>`（清单格式，`formatPending()`）<br>`scripts/lib/say.mjs` 的 `formatPending()` | 补跑清单的每一行：段名 + 第几句 + 原句 + 原因尾巴 | 照段名与原句去查那个任务的旁白脚本；`docs/NARRATION.md` |
 
+
+### 1.9b 版面守门（`docs/LAYOUT.md`，第十一轮新增）
+
+| 输出词 | 含义（什么情况下会看到它） | 修法 |
+|---|---|---|
+| `版面守门：N/M 段采到了文字绘制 · 最挤的一帧 K 块（上限 6；主体之外 ≤ 2）`<br>`scripts/anim.mjs` 的 `cmdCheck`（`grep -n 版面守门： scripts/anim.mjs`） | 这一段的标题行：K = 整片**最挤那一帧**的信息块数 | 这只是读数。下面每个采样点一行，带 `⚠` 的才是超限 |
+| `  ⚠ <段> t=…s  K 块（D 次文字绘制）  主体区 未声明  ← 主体之外还有 N 个「看的地方」（上限 2）：a / b / c`<br>同上 | `<段>` 在 `t` 这一帧有 `K` 块文字（`D` 次绘制调用 —— 6 个数挤成一块时 D 远大于 K）。`主体区` 一栏是 `focus` 的读数：没声明就是 `未声明` | 一条 `←` 就是一条判据：**块数超限**（一屏的事太多）或**主体之外太多「看的地方」**（不知道看哪个主体）。改法见下一行 |
+| `⚠ 版面守门：N/M 段**一屏的东西太多**` + `  观众对钠那期的原话：「有些动画元素相互遮挡害得我搞不清楚到底要看哪个主体」。` + 三条改法<br>同上 | 有段落在**它最挤的那一帧**超限 | ① 读数一次只揭一个；② 画面文字只放标注（句子交给旁白与字幕）；③ 声明 `focus`。细则 [`LAYOUT.md`](LAYOUT.md) |
+| `[版面守门] <段>：一屏 9 块文字（上限 6）；主体之外还有 7 个「看的地方」（上限 2）：…`<br>同上（`errs.push`） | **`--strict` 才出现**：这一条进了 errs（退出码 1） | 同上；不用 `--strict` 时这些段只是 warn |
+| `⚠ 版面守门：N 段**没有主体声明** ——「这一段看哪里」没判` + `  段：a, b, c`<br>同上（同时 `pushSkipped(skipped, 版面守门·主体声明（focus）, …)`） | 这些段没写 `focus` ⇒ 判据 ③（主体区里压着几块）**没跑** | 场景对象上写 `focus: center` 或 `{ x, y, w, h }`（`cut()` / 配置档节点上也行）。**这不是失败，是「没验」** —— `--strict` 下才算失败 |
+| `⚠ 版面守门这次**一条都没验**：一个采样点都没拿到绘制记账。`<br>同上 | `--only` 选到的段没有文字 / 渲染全失败 | 去掉 `--only` 再看；或确认这一段真的一个字都没画 |
+| `（版面守门不可用：…）` / `（版面守门汇总失败：…）`<br>同上（catch 分支） | 页面失联或判据抛异常 —— **不是「版面都对」** | 看同一段里的 `skipped:` 那一行；页面失联时先解决失联 |
+| `✗ 为什么红（N 条）：` + `  · [旁白复述] 12 句旁白被逐字写进画面` + `  · [版面守门] <段>：…`<br>`scripts/anim.mjs` 的 `cmdCheck`（`grep -n 为什么红 scripts/anim.mjs`） | 退出码 1 时**逐条**打印为什么（上限 12 条）—— 以前只有一行「✗ 有 N 个问题」 | 照每条的括注改。`[旁白复述]` 与 `[版面守门]` **只在 `--strict` 下**进这一栏 |
 ### 1.10 探头与量具（`tools/`）
 
 | 输出词 | 含义（什么情况下会看到它） | 修法 |
@@ -269,9 +293,9 @@
 
 ### 1.14 音频响度守门（LUFS / true peak / LRA，`docs/BACKLOG.md` 1-20）
 
-> ⚠ **状态（写表时）**：库已落地（提交 `ca53061`，`scripts/lib/media.mjs`），离线回归是 `tools/test-loudness.mjs`。
-> **`anim mix` / `anim check` 的打印点还没接上** —— 全仓库调用 `formatLoudness()` 的只有那个回归脚本。
-> 所以下面这些词**目前主要会在这个量具的输出里看到**；等接线落地（1-20 的后半），它们会出现在 `mix` / `check` 里。
+> ⚠ **状态**：库与接线**都已落地**（`ca53061` 库 + `099eec3` 接线）：`anim check` 对 `packaging` 轨跑一次、`anim mix` 收尾也报一次（靶子 `-14 LUFS / -1 dBTP`，**只报数字、不 gate、不自动归一化**）。
+> 离线回归是 `tools/test-loudness.mjs`（39 项）。
+> **2026-10-16 新增**：`check --quick` 用 `measureLoudness({ seconds: 60 })` 只量前 60 秒（246s 的轨 6.9s → 1.7s，省 76%）—— ⚠ 那是一个**截断读数**，所以它必须把自己说出来（见下表最后一条）。
 > 那句纪律值得先记住：**"你听不见，就说出这一点并报数字"** —— 这一层以前是唯一靠耳朵的验证。
 
 | 输出词 | 含义（什么情况下会看到它） | 修法 |
@@ -282,13 +306,15 @@
 | `真峰 x.xx dBTP 超过上限 -1 dBTP：平台/有损转码会削顶`<br>`scripts/lib/media.mjs` 的 `assessLoudness()`（`kind: 'true-peak'`） | 真峰越界（**上限而非等号**：轻很多不算越界） | 降总电平 / 加限幅；这是"听众那里会不会削"的问题，与采样峰值无关 |
 | `量不出整合响度（input_i = …）—— 文件是静音、或者根本不是音频`<br>`scripts/lib/media.mjs` 的 `assessLoudness()`（`kind: 'nan'`） | 数字不是有限数 | 检查音频文件本身（静音 / 格式不支持）；⚠ 这是**没验**，不是"达标" |
 | `LRA` 超 11 | 响度范围过宽（口播 + 音乐床天然就宽） | **不算错误**，只是提示"忽大忽小"：见 `scripts/lib/media.mjs` 的 `LOUDNESS_TARGET` 注释 |
+| `  ⚠ 这个读数**只量了前 60s**（--quick 的省时档）—— 整合响度是整段的量，别拿它当全片结论；要结论就去掉 --quick。`<br>`scripts/anim.mjs` 的 `cmdCheck`（`measureLoudness(file, { seconds })` 回显的 `m.seconds`） | ⚠ **截断读数**：值本身可能是错的（实测 sodium-mix：整条 `-20.9 LUFS / -2.96 dBTP / LRA 8.3` → 前 60s `-20.7 / -4.52 / 6.5`） | 要去掉 `--quick` 再量一次；⚠ `-t` 必须是**输入侧**选项（放输出侧滤镜图仍吃到整条轨，读数会"看着像结论"—— 单测 `tools/test-loudness.mjs` ⑦ 钉住这一条） |
 
 ### 1.15 画面上的数字必须有出处（`tools/lint-fabricated-numbers.mjs`，`docs/BACKLOG.md` 1-22）
 
 > 这一层的理由写在 `AGENTS.md` §10.10：**我们的画面全是代码算的，"编一个数字"的成本是零** ——
 > 所以只能靠硬规则 + 交付前自审。判据与边界见 `docs/FACTS-TEMPLATE.md` 的 ★ 一节。
 > 它只扫**数值显示位**（文字入口的文本 / 镜头模板参数 / 旁白字幕，含流向这些位置的变量与数组元素），
-> 坐标 / 字号 / 时长 / 阈值 / 颜色分量 / 注释 / 算出来的数**都不算**。
+> 坐标 / 字号 / 时长 / 阈值 / 颜色分量 / 注释**都不算**；**算出来的数**（判据 ③，2026-10-16 补上）
+> 单列一段、并且**明说「没验」** —— 静态查不到它等于几，见下表的 `算出来的值：` 几条。
 
 | 输出词 | 含义（什么情况下会看到它） | 修法 |
 |---|---|---|
@@ -301,7 +327,11 @@
 | `   ── 全部显示位（--slots）：` + `   <file>:<line> 「<值>」 〔<role>〕 <源码>`<br>`tools/lint-fabricated-numbers.mjs`（`--slots`） | 把**判据认为**是数值显示位的位置全列出来 | 判据太宽/太窄时用它复核；改判据要动那个工具，不改事实表 |
 | `   ⚠ <file> 扫描到文件尾仍未闭合（源码里可能有含引号的正则）—— 这个文件的判据可能不准`<br>`tools/lint-fabricated-numbers.mjs`（`r.unclosed`） | ⚠ 那个文件的字符串扫描没闭合 ⇒ **这个文件的判据可能不准** | 人工看那个文件；与 `lint-narration-dup` 的同名警告是同一条纪律 |
 | `· N 个任务没有事实表 ⇒ 这一项没验（不是通过）：<任务名…>` + `  （写一份 tasks/<任务>/FACTS.md 它们才进判据 —— 模板见 docs/FACTS-TEMPLATE.md）`<br>`tools/lint-fabricated-numbers.mjs` | ⚠ **「空 ≠ 干净」的第一个面**（BACKLOG 1-22）：没有 `FACTS.md` 的任务被安静跳过，所以**它的 0 命中不是通过** | 给那个任务写一份 `tasks/<任务>/FACTS.md`（模板 `docs/FACTS-TEMPLATE.md`）；交付自检见 `AGENTS.md` §10.10 |
-| `合计：N 个任务 / M 个显示位数字，K 个值找不到出处[，X 处显式豁免]；另有 Y 个任务**没验**（没有 FACTS.md）` + `修法二选一：① 去 FACTS.md 补上这个数的出处（逐字原文）；② 这个数还没定就写成占位符 —— figure —。` + `       片子自己的编号（WORKS 04 / v0.1.2）与示意读数同样要登记 —— 找不到就说明事实表漏了。` + `纪律原文：AGENTS.md §10.10 / docs/FACTS-TEMPLATE.md；背景：docs/BACKLOG.md 1-22。`<br>`tools/lint-fabricated-numbers.mjs` 的收尾 | 全仓库汇总 + **修法二选一**（它自己打出来的） | ① 补 `FACTS.md` 出处（逐字原文）；② 改成占位符 `— figure —`（槽位先渲染出来，别填一个"看起来合理"的数） |
+| `   算出来的值：N 处 —— 这些位置静态查不到等于几，这一项**没验**（判据 ③）` + `      <file>:<line>  〔<成因> · <角色>〕「<片段>」` + `        源码：<那一行>` + `      …… 另有 N 处（--max 0 看全部）`<br>`tools/lint-fabricated-numbers.mjs` 的 `computedLines()`（`grep -n 'function computedLines'`；成因词表在 `const COMPUTED_KIND`） | **判据 ③**：这一处显示位的数字**不是字面量** —— 模板串插值 / 字符串 `+` 拼接 / `String()` / `.padStart()` / `.toFixed()` / `values` 里的变量。静态查不到它等于几 ⇒ **这一项没验**。⚠ 它**不进退出码**（不是「找不到出处」）：所以「零命中 / 退出码 0」**不等于**这些位置验过了。⚠ 没有 `FACTS.md` 的任务也照扫（判据 ③ 只读源码） | 逐条打开 `文件:line` 看那个数怎么来的：① 在 `tasks/<任务>/FACTS.md` 里**登记口径**（这个数怎么来的、代表什么、不代表什么）；② 还没定就渲染成占位符 `— figure —`。判据原文与边界：`docs/FACTS-TEMPLATE.md` ★ 第 5 条 |
+| `   算出来的值：0 处 —— 这一段扫过了；这一类静态查不到等于几，真出现时会被列在这里 ⇒ **这一项没验**（判据 ③）`<br>同上（`computedLines()` 的 0 处分支） | 这个任务一处算出来的显示位都没有。⚠ 这一行是**「判据 ③ 真的跑了」的证据**（报告里没有 `算出来的值：` 这一行 = 这一段没执行），**不是**「这一类不存在」 | 无（无事的读数）。要复核判据 ③ 收了哪些位置：`--json` 读 `tasks[].computed` |
+| `  这几个任务的「算出来的值」（判据 ③ 不需要事实表，所以照样扫了）：` + `    <任务名>  算出来的值：N 处 …`<br>`tools/lint-fabricated-numbers.mjs` 的跳过块（`grep -n '判据 ③ 不需要事实表'`） | 没有 `FACTS.md` 的任务，**字面量那一项安静跳过**；但判据 ③ 只读源码 ⇒ **照样扫、照样逐条打**（否则它们的「算出来的值」会连「没验」都没人看见） | 无（读路径）。想让它进字面量判据：写一份 `tasks/<任务>/FACTS.md`（模板 `docs/FACTS-TEMPLATE.md`） |
+| `"computedCount": N` + `"computed": [{ "at": "file:line", "kind", "role", "snippet", "code" }]`（`tasks[]` 里）+ `"skippedComputed": [ { name, computedCount, computed } ]`（顶层）+ `summary.computed`<br>`tools/lint-fabricated-numbers.mjs` 的 `--json` 分支（`grep -n 'skippedComputed'`） | 判据 ③ 的机器可读载荷：`tasks[].computed` 是有事实表任务的位置清单；`skippedComputed` 是**没有** `FACTS.md` 的任务也照样扫出来的清单。两者都**不进 `summary.unmatched`**、**不影响退出码** | 调用方按 `summary.computed` 决定要不要人眼复核那几处；`unmatched` 仍是退出码的唯一依据 |
+| `合计：N 个任务 / M 个显示位数字，K 个值找不到出处[，X 处显式豁免]，C 处算出来的值**没验**（判据 ③：静态查不到等于几）；另有 Y 个任务**没验**（没有 FACTS.md）` + `修法二选一：① 去 FACTS.md 补上这个数的出处（逐字原文）；② 这个数还没定就写成占位符 —— figure —。` + `       片子自己的编号（WORKS 04 / v0.1.2）与示意读数同样要登记 —— 找不到就说明事实表漏了。` + `纪律原文：AGENTS.md §10.10 / docs/FACTS-TEMPLATE.md；背景：docs/BACKLOG.md 1-22。`<br>`tools/lint-fabricated-numbers.mjs` 的收尾 | 全仓库汇总 + **修法二选一**（它自己打出来的） | ① 补 `FACTS.md` 出处（逐字原文）；② 改成占位符 `— figure —`（槽位先渲染出来，别填一个"看起来合理"的数） |
 
 ### 1.16 评论与可机读模板表（`anim note` / `anim shots --json`）
 
@@ -396,7 +426,7 @@
 |---|---|---|
 | `没有事实表 ⇒ 这一项没验（不是通过）`（1-22）<br>完整：`· N 个任务没有事实表 ⇒ 这一项没验（不是通过）：<任务名…>` | 那个任务**没有 `tasks/<任务>/FACTS.md`**，所以数字出处这一项**根本没查** —— 它的 0 命中不是通过。（`lint-fabricated-numbers` 会安静跳过它们，退出码仍是 0） | 主表 **§1.15** 最后一条；写一份 `FACTS.md`（模板 `docs/FACTS-TEMPLATE.md`） |
 | `没有可查的对象`（1-21）<br>完整：`镜头模板依赖：这支任务没有用到 src/shots/ 的模板（…）—— 这一项**没有可查的对象**，不是"依赖都对"` | 这个任务**一个镜头模板都没用**，所以依赖校验没有对象可查 —— 它**不是**"依赖都满足" | 主表 **§1.1** 的 `镜头模板依赖：…没有可查的对象…` 那条 |
-| `还没接线：这次没有验它`（1-21）<br>完整：`⚠ 'under' 这一条**还没接线**：这次没有验它（…）` | 这个依赖令牌**引擎自己还没实现校验**。它**既不进 `errs` 也不进 `skipped`**（对每个用 `whip` 的任务都一样，塞进 skipped 会让 `--strict` 永远红、把真正的"这次没跑"淹掉） | 主表 **§1.1** 的 `…这一条**还没接线**…` 那条；真要看交叠就 `still` / `video` 看那一段（`docs/ENGINE.md` §14.9 读法 3） |
+| `· 'under' 是**时间线层**的依赖（交叠够不够），这一步判不准`（1-21 → 2026-10-16 接线）<br>完整：`  · 'under' 是**时间线层**的依赖（交叠够不够），这一步判不准 —— 它在时间线展开之后由**段级审计**查（2026-10-16 接线，BACKLOG 头部 ②），见下面「依赖 under」那一段；那一段没有出现就是**没验**` | 这个依赖令牌**不在这两步里**查（换到段级审计去了）：它**既不进 `errs` 也不进 `skipped`**。⚠ 说成"还没接线"是假话（已经接线了）、说成"验过了"也是假话（这一段只负责指路） | 主表 **§1.1** 的 `· 'under' 是**时间线层**的依赖…` 那条 + 紧跟的「依赖 under」几行；判据原文 `docs/ENGINE.md` §14.9、单测 `tools/test-timeline-audit.mjs` |
 
 **这三面共同的读法**：看到它们，**不许在报告里写"通过"** —— 要么补上它要的前提（写 `FACTS.md` /
 给任务配上模板 / 等引擎接线），要么**明说这一项没验**。同样的纪律在别处还有几个面：
@@ -441,8 +471,8 @@
 
 ## 5. 已知分叉（写表时发现，**没有改代码**）
 
-1. **输出里的 `修法` 指向已归档的文档路径**（用户/agent 照做会找不到文件）：
-   - `scripts/anim.mjs` 的 `cmdProbe` 收尾：`…（见 docs/IMPROVEMENTS.md 的确定性一节）` → 真路径 `docs/history/IMPROVEMENTS-1-3.md`（§1 的确定性一节）
+1. ✅ **已修（2026-10-16，BACKLOG 头部 ⑨）**：输出/注释/文档里指向已归档 `docs/IMPROVEMENTS*.md` 的路径**全部改到 `docs/history/…` 下**（代码侧 34 个文件、91 行；输出词那几条见 §1.6）。下面是当时的记录，留作对照：
+   - `scripts/anim.mjs` 的 `cmdProbe` 收尾：`…（见 docs/history/IMPROVEMENTS-1-3.md 第二轮 P1-2「同一时刻、从不同起点开渲结果不同」）` → 真路径 `docs/history/IMPROVEMENTS-1-3.md`（§1 的确定性一节）
    - `scripts/anim.mjs` 的 `cmdShake` 收尾与文件头（`help()` 里那条）：`（判据见 docs/IMPROVEMENTS-3.md）` → `docs/history/IMPROVEMENTS-1-3.md`（第三轮）
    - `scripts/anim.mjs` 的 `cmdVideo` 收尾抖动守门：`见 docs/IMPROVEMENTS-3.md（"像不像手持取决于频率…"）` → 同上
    - `tools/scene-harness.mjs:1316`：`（docs/IMPROVEMENTS.md P0-2）` → 同上

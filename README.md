@@ -210,11 +210,11 @@ node scripts/anim.mjs analyze 我的片子      # 分析拍子/小节/段落/包
   教程见 `docs/CONFIG-ONLY.md`，可以照抄的完整示例是 `tasks/example-config-only/`。
 
   ```sh
-  node scripts/anim.mjs shots                   # 有哪些模板（8 个）、参数叫什么、默认值是多少
+  node scripts/anim.mjs shots                   # 有哪些模板（11 个）、参数叫什么、默认值是多少
   node scripts/anim.mjs video <任务>             # 只写了 task.config.mjs 也能出完整 mp4
   ```
 
-- **现成模板**（A 档镜头库 `src/shots/`，也就是配置档查的那张表）：常见镜头现在是**一行**。8 个参数化模板（`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`），场景文件退化成「取模板 + 给参数」：
+- **现成模板**（A 档镜头库 `src/shots/`，也就是配置档查的那张表）：常见镜头现在是**一行**。11 个参数化模板（`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid` `quote` `counter` `compare`），场景文件退化成「取模板 + 给参数」：
 
   ```js
   // tasks/<任务>/scenes/chart.js
@@ -229,7 +229,7 @@ node scripts/anim.mjs analyze 我的片子      # 分析拍子/小节/段落/包
   `shot()` 返回的就是普通场景对象，所以模板镜头和手写场景能混在同一条时间线里。看有哪些模板与参数：
 
   ```sh
-  node scripts/anim.mjs shots           # 列出 8 个模板
+  node scripts/anim.mjs shots           # 列出全部模板
   node scripts/anim.mjs shots chart     # 某个模板的全部参数与默认值
   ```
 
@@ -255,6 +255,7 @@ docs/history/      归档：已完成的改进记录与交接单（索引见 doc
 src/core/          引擎
 src/kit/           引擎自带的镜头工具（makeShot / 排版 / 版面元件 / 共享背景）
 src/shots/         A 档镜头库：title / chart / kinetic / whip / outro / wave / pulse / grid
+                   + quote / counter / compare（BACKLOG 0-5 新增的三个）
 src/timeline.js    时间线 DSL
 src/app.js         浏览器入口（预览 + 离屏协议）
 scripts/anim.mjs   CLI

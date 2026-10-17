@@ -449,7 +449,10 @@ node scripts/anim.mjs shake promo --from 10 --to 20                # ⇒ 平滑�
 2. `readPixels` 走 **GPU 编码 + 8bit 回读**：6.4 → 5.2ms，但要接受 sRGB 舍入差 1 LSB（会动基线）。
 3. **PBO 异步回读**：把 5ms 藏到下一帧。
 4. **WebCodecs**：收益最大（传输量 -314×），但要重做出片流程。
-5. 老任务里的 `disp()/dcss()` 颜色绕行补丁（`tasks/nekohome/scenes/_kit.js` 顶部）要不要回改 —— **仍待用户拍板**。
+5. ~~老任务里的 `disp()/dcss()` 颜色绕行补丁（`tasks/nekohome/scenes/_kit.js` 顶部）要不要回改 —— 仍待用户拍板。~~
+   → ✅ **2026-10-16 用户拍板：不回改**（成片已定稿，片里 `dscale(P, …, 1.35)` 这类系数是照现观感调的）。
+   只把 `_kit.js` 顶部注释更正为"**历史绕行补丁，不是设计要求**"，并写明会偏亮、新片子别照抄。
+   见 [`BACKLOG.md`](BACKLOG.md) §4 里"第十二轮"那几行。
 
 ---
 

@@ -8,7 +8,7 @@
  * 里**各写了一遍**：`put`、`fade`、`typed`、`panel`/`cardFrame`、`kicker`、`footer`、
  * `enterOffset`、`cutOut`、`transPass`、`worldPass` 的结构都重复。
  * 更糟的是照抄第二次时**漏了 `openFrame` 的调用**，导致 9 段里 8 段的底是纯黑
- * —— 这正是"复制粘贴当抽象"的典型失败模式（`docs/IMPROVEMENTS.md` P1-1 / P0-2）。
+ * —— 这正是"复制粘贴当抽象"的典型失败模式（`docs/history/IMPROVEMENTS-1-3.md` P1-1 / P0-2）。
  *
  * ## 用法
  *
@@ -32,6 +32,20 @@
  */
 
 export { mul, withAlpha, sat01, put, writeLine, fade, typed, codeRow, seqRnd, contrast, css } from './layout.js';
+
+/**
+ * `src/kit/motion.js` —— **运动规则**的纯函数（规则表：`docs/MOTION.md`；BACKLOG 1-27）。
+ *
+ * `nudgeCurve` 三段式整组位移（10/65/25，出处 REFERENCE-hyperframes.md 516 行）/
+ * `waterfallStagger` 错峰到达的归一化（`items × stagger ≤ ~0.5s`，535 行）+
+ * 纯判据 `waterfallOver` / `glowPeakCap` 辉光峰值上限（≤ ~0.45，522 行）。
+ * 三个都只吃 t 与参数、**不碰 GPU / 浏览器**（连 import 都没有），可以离线单测：
+ * `node tools/test-motion.mjs`。⚠ 那些数值是**外部经验值，我方未实测**（MOTION.md §0）。
+ */
+export {
+  nudgeCurve, waterfallStagger, waterfallOver, glowPeakCap,
+  NUDGE_SPLIT, NUDGE_PHASE, MAX_STAGGER_SPAN, GLOW_PEAK_CAP,
+} from './motion.js';
 
 export { panel, fillRect, kicker, footer, reticle, marker } from './elements.js';
 
@@ -63,7 +77,7 @@ export { makeThreeShot } from './three.js';
  *   · 这里的 `panelBox(ctx, { x, y, w, h, … })` —— 整块面板（底 + 边 + 四角 + 标题 + 副标题
  *     + `tone` 压暗），只吃 `ctx`。
  * 所以本层那个**改名成 `panelBox` 再出**，`elements.js` 的 `panel` **一个字都不动**
- * （老场景照旧；`docs/IMPROVEMENTS-4.md` §4.4 B）。
+ * （老场景照旧；`docs/history/IMPROVEMENTS-4-5.md` §4.4 B）。
  *
  * 另外：这里的 `col` 与 `./layout.js` 的 `mul/withAlpha` 是同一族，为避免两个 `col` 打架，
  * 本层那个出成 `panelCol`；`jitter/win/step` 与 `./blocks.js` 的同名函数**实现相同**，不重复出。
@@ -75,7 +89,7 @@ export {
 
 /**
  * `src/kit/blocks.js` —— **方块世界 kit**（3D 线段批 + 画家算法 + 面朝向判据 + 世界切片 +
- * 按段名定位的摄影机）。`docs/IMPROVEMENTS-4.md` §4.2 / §4.3 / §4.4 A/C。
+ * 按段名定位的摄影机）。`docs/history/IMPROVEMENTS-4-5.md` §4.2 / §4.3 / §4.4 A/C。
  *
  * ```js
  * import { makeBlocksKit } from '../../../src/kit/index.js';

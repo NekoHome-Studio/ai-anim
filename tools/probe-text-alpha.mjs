@@ -1,6 +1,6 @@
 // P1-3 验收：`type.write` 的 `alpha` 必须在 `stagger: 0` 时也参与动画。
 //
-// 背景（docs/IMPROVEMENTS.md P1-3）：text.js 里那行
+// 背景（docs/history/IMPROVEMENTS-1-3.md P1-3）：text.js 里那行
 //     const k = stagger > 0 ? sat((t - at) / dur) : 1;
 // 让「整行淡入」在 stagger=0 时永远取到 k=1 —— alpha 的起始值根本取不到，
 // 整行直接以终值出现。两个任务的 _kit.js 都只能用 `stagger: 1e-4` 这种 hack 绕过。

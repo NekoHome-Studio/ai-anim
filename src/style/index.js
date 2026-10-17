@@ -274,6 +274,9 @@ export function resolveStyle(spec = {}) {
     );
   }
   const over = isObj ? req : {};
+  // 版面守门的阈值（docs/LAYOUT.md）也可以挂在 style 上：`style: { name: 'paper', layout: {...} }`。
+  // 顶层 `layout` 字段由 tasks.js 合进 spec.style 之后同样落在这里。
+  const layout = { ...(pack.layout ?? {}), ...(spec.layout ?? {}), ...(over.layout ?? {}) };
   // ⚠ `captions: false` 要能**覆盖掉**风格包里的字幕样式（而不是被 merge 成对象）
   const caps = over.captions === false || pack.captions === false
     ? false
@@ -288,6 +291,9 @@ export function resolveStyle(spec = {}) {
     post: { ...(pack.post ?? {}), ...(over.post ?? {}) },
     grid: { ...GRID_BASE, ...(pack.grid ?? {}), ...(over.grid ?? {}) },
     captions: caps,
+    // 版面守门（docs/LAYOUT.md）：`{ maxBlocks, maxOffSubject, maxInFocus, gap, minAlpha }`。
+    // 空对象 = 用 src/layout.js 的默认值 —— 老任务一个像素都不变（这几项不进任何绘制路径）。
+    layout,
   };
 }
 

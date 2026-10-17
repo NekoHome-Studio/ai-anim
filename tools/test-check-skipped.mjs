@@ -261,7 +261,9 @@ t('源码自检：四个"没跑成"的落点都真的调了 pushSkipped', () => 
 
 t('源码自检：cmdCheck 的结论行必须带 skipped 计数，并且 --strict 只加码不放松', () => {
   const start = src.indexOf('async function cmdCheck(');
-  const end = src.indexOf('/** 把若干时刻渲染成一张接触表', start);
+  // ⚠ 终点锚锚在**函数定义**上，别锚注释文本：2026-10-16 把 writeContactSheet 的 JSDoc 改成多行，
+  //   原来那句 '/** 把若干时刻…' 当场失配 —— 三处测试一起报「定位不到 cmdCheck 函数体」。
+  const end = src.indexOf('async function writeContactSheet', start);
   assert.ok(start > 0 && end > start, '定位不到 cmdCheck 函数体');
   const body = src.slice(start, end);
   assert.match(body, /const skipped = \[\]/);
@@ -283,7 +285,9 @@ t('源码自检：--quick 下结论行不许说"两条路径都验过了"（没�
   // 2026-10-10 主代理跑 `check demo --quick` 抓到：--quick **只跑单子帧**，结论行却无条件写着
   // "（单子帧与多子帧两条路径都验过了）"。那正是 1-19 要消灭的东西 —— 没跑却说跑了。
   const start = src.indexOf('async function cmdCheck(');
-  const end = src.indexOf('/** 把若干时刻渲染成一张接触表', start);
+  // ⚠ 终点锚锚在**函数定义**上，别锚注释文本：2026-10-16 把 writeContactSheet 的 JSDoc 改成多行，
+  //   原来那句 '/** 把若干时刻…' 当场失配 —— 三处测试一起报「定位不到 cmdCheck 函数体」。
+  const end = src.indexOf('async function writeContactSheet', start);
   const body = src.slice(start, end);
   const at = body.indexOf('checkVerdictLine({ skipped: skipped.length })');
   assert.ok(at > 0, '定位不到结论行');

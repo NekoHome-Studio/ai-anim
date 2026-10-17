@@ -74,6 +74,39 @@ export const FAMILIES = {
 
 const CACHE_LIMIT = 4096;
 
+/**
+ * **文字入口记账**（版面守门用，见 `src/layout.js` 与 `docs/LAYOUT.md`）。
+ *
+ * 为什么记在这里：观众反馈「有些动画元素相互遮挡害得我搞不清楚到底要看哪个主体」，
+ * 而引擎以前**根本不知道**这一帧画了几块字 —— 亮度统计看不出"元素太多"，
+ * `check` 也一条判据都没有。这一笔记的是"实际发生的绘制"，与 `gl.paint` 的
+ * 背景守门同一个套路（`src/core/gl.js` 的 `_notePaint`）。
+ *
+ * 三条规矩：
+ *   · **只记场景自己那一层**（`gl.paint.layer === this`）。引擎的字幕层、HUD 层、
+ *     错帧卡片都画在别的图层上 —— 它们不该算进"这一段画了几块字"；
+ *   · 只有**真的会画出字形**才记：空串、`alpha ≈ 0`、逐字入场还没开始的字都不算。
+ *     钠的 sodium/glass 段一帧 16 个队列编号，其中"还没揭晓"的那些不该算人数；
+ *   · 记 `x / y / size / w / alpha / sample`，**不记 alpha 数组**（是数组时取 1：
+ *     "这块字被安排了"，具体多透由调用方决定）。
+ *
+ * @param {TextKit} type
+ * @param {string} text @param {number} x @param {number} y
+ * @param {any} style @param {number} alpha @param {number} w
+ */
+function noteText(type, text, x, y, style, alpha, w) {
+  const paint = type?.gl?.paint;
+  if (!paint || paint.layer !== type) return;
+  const blocks = paint.blocks ?? (paint.blocks = []);
+  const s = String(text ?? '');
+  if (!s.trim()) return;
+  if (!(alpha > 0)) return;
+  blocks.push({
+    x, y, size: style?.size ?? 64, w: Math.max(0, w),
+    alpha, sample: s.length > 24 ? s.slice(0, 24) : s,
+  });
+}
+
 export class TextKit {
   /** @param {CanvasRenderingContext2D} ctx */
   constructor(ctx) {
@@ -220,7 +253,7 @@ export class TextKit {
     const c = this.ctx;
     const style = opts;
     this.font(style);
-    const { clusters, x: X } = this.layout(text, style);
+    const { clusters, cum, x: X } = this.layout(text, style);
     const stagger = opts.stagger ?? 0;
     const dur = opts.staggerDur ?? 0.45;
     const t = opts.t ?? 0;
@@ -235,7 +268,7 @@ export class TextKit {
     //   整行直接以终值出现 —— 所有任务都只能用 `stagger: 1e-4` 这种 hack 绕过
     //   （tasks/nekohome 和 tasks/fidus 的 _kit.js 里各有一处，注释都写着"绕开"）。
     //
-    // ⚠⚠ 然后是第二个坑（docs/IMPROVEMENTS-2 P0-1）：`opts.alpha !== undefined` 不能算"要动画"。
+    // ⚠⚠ 然后是第二个坑（docs/history/IMPROVEMENTS-1-3.md P0-1）：`opts.alpha !== undefined` 不能算"要动画"。
     //   数值型 alpha（`alpha: 1` / `alpha: 0.5`）是**常量不透明度**，与 t 无关；
     //   但旧判据把它当动画 → `k = sat((t - 0)/0.45)`，而 `opts.t` 缺省 0 ⇒ `k = 0`
     //   ⇒ 下面的 `if (k <= 0) continue` **整个字形直接不画**（不是画成透明）。
@@ -251,9 +284,12 @@ export class TextKit {
     // ⚠ 在这里 return 而不是循环里 continue：`c.save()` 已经执行过，必须配对 `c.restore()`，
     //   否则 Canvas2D 的状态栈会一帧帧涨上去。
     if (constAlpha <= 0) { c.restore(); return this; }
+    // 这一行画完时的动画进度（给下面的记账用；循环里 k 是块级作用域，出来就没了）
+    let lineK = 1;
     for (let i = 0; i < clusters.length; i++) {
       const at = i * stagger;
       const k = perGlyphAnim ? sat((t - at) / dur) : 1;
+      if (k > lineK) lineK = k;
       if (k <= 0) continue;
       const e = 1 - (1 - k) ** 3;
       let dx = 0, dy = 0, sc = 1, al = 1;
@@ -289,6 +325,15 @@ export class TextKit {
       }
     }
     c.restore();
+    // 版面守门记账（见 noteText）：整行都画出来了才算"一块字画满了"，
+    // 逐字入场半途的那一帧只量到已经画出来的那一段宽度。
+    noteText(
+      this, text, x, y, style,
+      perGlyphAnim ? constAlpha * lineK : constAlpha,
+      // 宽度一律量**整行**：它是"这块字横向占多宽"的读数，判据只用它算主体区重叠比。
+      // 逐字入场半途量前缀会让同一行字的宽度随帧变化，反而更难解释。
+      Math.max(0, cum[cum.length - 1] || this.measure(text, style)),
+    );
     return this;
   }
 
@@ -346,6 +391,8 @@ export class TextKit {
     // 字符区间与「拼不拼得上」都在这里算；拼不上就警告一次（不抛，见 warnKaraokeMismatch）
     const { spans, mismatch } = karaokeSpans(text, words);
     if (mismatch !== null) warnKaraokeMismatch(text, mismatch);
+    // 版面守门记账：卡拉OK 整行算一块（唱到哪亮哪不改"这一行占了一屏"这件事）
+    noteText(this, text, x, y, style, 1, cum[cum.length - 1] ?? this.measure(text, style));
 
     // 「字符下标 → 簇下标」的映射（spans 用的是 JS 字符串下标）。
     // 字符总数取 spans 累加的和，而不是 `text.length`：`text` 与 words 拼出来的串在

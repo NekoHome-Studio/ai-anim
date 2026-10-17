@@ -331,11 +331,15 @@ function num(x) {
  *   if (!assessLoudness(m).ok) …                       // 判据（可被单测直接断言）
  *
  * @param {string} file
- * @param {{ stderr?: string, target?: { i?: number, tp?: number, lra?: number } }} [opts]
+ * @param {{ stderr?: string, target?: { i?: number, tp?: number, lra?: number }, seconds?: number }} [opts]
  *        `stderr` 给定时**不跑 ffmpeg**，只解析这段文本（单测"最后一段完整 JSON"用）。
+ *        `seconds` 给定时只量**前 N 秒**（`-t`，BACKLOG 头部 ⑤）：4 分钟的轨整条量要 12–14s，
+ *        而 `check --quick` 只是想看一眼数字有没有离谱。⚠ 截断**会改变读数本身**
+ *        （整合响度是整段的量），所以 `check` 必须把"只量了前 N 秒"一起打出来 ——
+ *        绝不能拿一个截断读数当整段的结论。返回的 `seconds` 就是这件事的凭据（没截断时是 null）。
  * @returns {{ ok: true, file: string, i: number, tp: number, lra: number, thresh: number,
  *             targetOffset: number, target: { i: number, tp: number, lra: number },
- *             raw: Record<string, any>, argv: string[] }}
+ *             raw: Record<string, any>, argv: string[], seconds: number|null }}
  * @throws {Error} 失败是**可区分**的三种（`err.kind`），绝不返回 `null` 让上游以为"测过了"：
  *   · `no-input`  —— 文件不存在 / 读不到；
  *   · `no-ffmpeg` —— 没有 ffmpeg（或 `ANIM_FFMPEG` 指的东西跑不起来）；
@@ -353,7 +357,7 @@ export function measureLoudness(file, opts = {}) {
       e.kind = 'no-json';
       throw e;
     }
-    return packLoudness(String(file), raw, target, []);
+    return { ...packLoudness(String(file), raw, target, []), seconds: null };
   }
 
   const f = String(file ?? '');
@@ -363,7 +367,16 @@ export function measureLoudness(file, opts = {}) {
     throw e;
   }
 
-  const argv = [...ffmpegArgv(), '-hide_banner', '-nostdin', '-v', 'info', '-i', f,
+  // `-t` **必须是输入侧选项**（放在 `-i` 之前）—— 这一条是量出来的，别凭直觉改：
+  //   放在 `-i` 之后（输出侧）时，muxer 的确只写 1.5s（日志里 `time=00:00:01.50`），
+  //   但**滤镜图仍然吃到了整条轨** ⇒ `loudnorm` 报的还是全片读数（实测：先静音后有声的夹具
+  //   给出 -14.27 而不是静音的 -inf，与不截断的 -14.16 只差 0.11 LU —— 一个**看着像结论的错数字**）。
+  //   输入侧 `-t` = "只读输入的前 N 秒"，这才是我们要的语义。
+  //   判据：`tools/test-loudness.mjs` ⑦（拿"先静音、后有声"的夹具钉住"读数必须掉下去"）。
+  const win = Number(opts.seconds) > 0 ? Number(opts.seconds) : null;
+  const argv = [...ffmpegArgv(), '-hide_banner', '-nostdin', '-v', 'info',
+    ...(win ? ['-t', String(win)] : []),
+    '-i', f,
     '-af', `loudnorm=I=${target.i}:TP=${target.tp}:LRA=${target.lra}:print_format=json`,
     '-f', 'null', '-'];
   const r = tryRun(argv);
@@ -389,7 +402,7 @@ export function measureLoudness(file, opts = {}) {
     e.kind = 'no-json';
     throw e;
   }
-  return packLoudness(f, raw, target, argv);
+  return { ...packLoudness(f, raw, target, argv), seconds: win };
 }
 
 /** 把 loudnorm 那串字符串字段收成结构化对象（`i` / `tp` / `lra` 一律是 `Number`，可能是 ±Infinity / NaN）。 */

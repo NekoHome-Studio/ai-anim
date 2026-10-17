@@ -131,10 +131,12 @@ whipShot.meta = {
  * `requires: ['under']` 的依据：`render()` 里 `const k = ctx.under ? ease.inOutCubic(f.tin) : 1;`
  * （`whip.js:69`）—— 它把**上一段的成帧**当源纹理甩走，所以时间线上必须与上一段交叠
  * （§14.4：`cut(whip, { dur, overlap, handlesTransition: true })`）。
- * ⚠ 目前 `check` **只认 `music` / `analyze` 两个令牌**（见 `scripts/anim.mjs` 的
- * `shotDependencyIssues()`）：交叠是**时间线层**的声明，任务源码的静态扫描判不准
- * （多行对象 / `seq()` / `--only` 之后的段表都不一样），假报比不报更贵 —— 所以
- * `under` 现在只是**声明**，还没有接线（BACKLOG 1-21 的后续）。
+ * `under` **已经接线**（2026-10-16，BACKLOG 头部 ② 的收口）：它不是靠任务源码的静态扫描判的
+ * （交叠是**时间线层**的声明：多行对象 / `seq()` / `--only` 之后的段表都不一样，文本扫描判不准），
+ * 而是靠**时间线展开之后的段级审计** —— `shot()` 把这个 `requires` 搬到场景对象上
+ * （`src/shots/index.js`），`src/timeline.js` 的 `auditUnderRequires()` 再按段判"它到底有没有
+ * 上一段可以甩"，由 `check` / `anim audit` 打印（没有交叠 ⇒ **硬问题**，退出码 1；
+ * 第 1 段 / `--only` 之后没得比 ⇒ 进 `skipped`，明说"没验"）。
  * `outputs.visual = 'transition'` 的依据是它读 `ctx.under` 而不是自己铺底（`whip.js:71-76`）。
  */
 whipShot.spec = {

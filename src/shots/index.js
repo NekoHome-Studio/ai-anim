@@ -20,7 +20,7 @@
  *    「手写场景」能混在同一条时间线里 —— 没想法的那几段用模板，需要创意的照旧写代码。
  * 2. **参数写错会抛错**，不静默忽略：`shot('chart', { value: [...] })`（少个 s）会点名
  *    「没有参数 "value"」并列出可用参数。这一条是刻意的 —— 这个引擎最贵的 bug 全是
- *    「写错了但画面照样出」（见 `docs/IMPROVEMENTS-2.md`）。
+ *    「写错了但画面照样出」（见 `docs/history/IMPROVEMENTS-1-3.md`）。
  * 3. **模板里的绘制代码是从已经出过片的场景逐字搬过来的**，画面逐像素一致
  *    （`tasks/demo` / `tasks/beat` 的验收：`node scripts/anim.mjs hashes <任务> --baseline`）。
  *    想改模板的数值/顺序之前，先跑一次那个命令，改完再跑一次。
@@ -66,8 +66,12 @@ import { outroShot } from './outro.js';
 import { waveShot } from './wave.js';
 import { pulseShot } from './pulse.js';
 import { gridShot } from './grid.js';
+import { quoteShot } from './quote.js';
+import { counterShot } from './counter.js';
+import { compareShot } from './compare.js';
 
-export { titleShot, chartShot, kineticShot, whipShot, outroShot, waveShot, pulseShot, gridShot };
+export { titleShot, chartShot, kineticShot, whipShot, outroShot, waveShot, pulseShot, gridShot,
+  quoteShot, counterShot, compareShot };
 
 /**
  * `spec.requires` 认得的**依赖令牌**（词表 = 契约的一部分）。
@@ -102,6 +106,9 @@ export const SHOTS = {
   wave: waveShot,
   pulse: pulseShot,
   grid: gridShot,
+  quote: quoteShot,
+  counter: counterShot,
+  compare: compareShot,
 };
 
 /**
@@ -112,7 +119,7 @@ export const SHOTS = {
  * export default shot('wave', { id: 'intro' });      // id 覆盖段名（--only / HUD / 报错里用它）
  * ```
  *
- * @param {string} name 模板名（`listShots()` 里那 8 个）
+ * @param {string} name 模板名（`listShots()` 里那些）
  * @param {Record<string, any>} [opts] 模板参数；**键写错会抛错**，不静默忽略
  * @returns {any} 场景对象（`{ id, setup?, render }`）
  */
@@ -135,7 +142,28 @@ export function shot(name, opts = {}) {
       }
     }
   }
-  return factory(opts);
+  const scene = factory(opts);
+  /**
+   * 把模板的**声明式依赖**带到场景对象上（BACKLOG 头部 ② 的收口，2026-10-16）。
+   *
+   * 为什么必须搬运一次：`spec` 挂在**工厂函数**上（`SHOTS.chart.spec`），而时间线展开之后
+   * 引擎手里只有**场景对象**（`item._scene`）—— 段对象上的 `requires` 于是永远是 undefined。
+   * 后果是「依赖前置校验」只查得了任务源码文本里那几条（`music` / `analyze`），
+   * `under` 这种**时间线层**的依赖谁也没查过。
+   *
+   * 现在段对象自己带着令牌，段级审计（`src/timeline.js` 的 `auditUnderRequires()`，
+   * 由 `src/app.js` 的 `underAudit()` 暴露给 CLI）就能在**时间线展开之后**判它：
+   * `under` 要求这一段与上一段真的交叠（`ctx.under` 只在交叠窗里有值）。
+   *
+   * ⚠ 只加一个数组属性，**不碰调用签名、不碰 defaults、不碰绘制代码** —— 画面零变化。
+   * ⚠ 场景自己已经写了 `requires` 时不覆盖（作者显式写的优先）。
+   */
+  const req = /** @type {any} */ (factory).spec?.requires;
+  if (Array.isArray(req) && req.length && scene && typeof scene === 'object'
+      && /** @type {any} */ (scene).requires == null) {
+    /** @type {any} */ (scene).requires = [...req];
+  }
+  return scene;
 }
 
 /**

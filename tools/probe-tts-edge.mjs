@@ -67,6 +67,22 @@ try {
   console.log(`\n✗ 真 TTS 失败（联网？edge-tts 还在吗？）：${e.message.split('\n').slice(0, 3).join('\n')}`);
   process.exit(2);
 }
+/**
+ * ⚠ **TTS 服务端挂了 ≠ 这个探针失败了**（2026-10-16 实测）：edge-tts 全线返回
+ * `WSServerHandshakeError: 403 Invalid response status` 时，`runSay()` **不会抛** ——
+ * 它按"失败也继续、最后统一补跑"的设计走完，然后把 `timing` 留成 `null`（**失败的句子绝不按 0 时长
+ * 混进时长表**，否则 slot 会静默算错）。第一版这里直接读 `res.timing.scenes[0]` ⇒
+ * 在整个回归套件里崩成 `TypeError: Cannot read properties of null`、**退出码 1**，
+ * 而这一项的契约写的是"连不上会「跳过」退出码 2"。
+ * 现在：没拿到表就明说"跳过"，一行原因（取第一句的失败原因）＋ 不算通过。
+ */
+if (!res?.timing?.scenes?.[0]?.lines?.length) {
+  const why = (res?.failed ?? [])[0];
+  console.log('\n⏭  跳过：TTS 这一次**一句都没合成出来**（不算通过）。');
+  if (why) console.log('   第一句的失败原因：' + String(why.reason ?? why.message ?? why).split('\n')[0].slice(0, 200));
+  console.log('   → 常见原因是服务端（edge-tts 的 403 / 无网络）；换 ANIM_TTS 指定别的驱动，或等一会儿重跑。');
+  process.exit(2);
+}
 const lines = res.timing.scenes[0].lines;
 
 console.log('\n① 合成与量长');

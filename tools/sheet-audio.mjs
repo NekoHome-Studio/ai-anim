@@ -525,18 +525,29 @@ function decodePNG(buf) {
  * 只有 `w` 一个未知数 → 由实际尺寸解出来，再验算回去（差 >3px 就认为"这不是 anim sheet 的版面"）。
  * 解不出来就返回 null，由调用方退回等分并**在图上和日志里说清楚**。
  *
- * @returns {{tile:{x0:number,y0:number,w:number,h:number}, step:{dx:number,dy:number}}|null}
+ * ⚠ `cols` 由调用方给（`--cols`，默认 4），**行数由 `H` 自己解** —— 这样 4×2 的 8 格表
+ *   与 4×4 的 16 格表都能对上（见函数体里那条实测记录）。
+ *
+ * @returns {{tile:{x0:number,y0:number,w:number,h:number}, step:{dx:number,dy:number},
+ *            cols:number, rows:number}|null}
  */
-function guessSheetTile(W, H, cols, rows) {
+function guessSheetTile(W, H, cols) {
   const pad = 6, lab = 20;
   const w = (W - pad) / cols - pad;
   const h = (w * 9) / 16;
   if (!(w > 40 && h > 20)) return null;
   if (Math.abs(cols * (w + pad) + pad - W) > 3) return null;
+  // ⚠ **行数由 PNG 的高度解出来**，不能让调用方拿"输出排版"的行数来凑：
+  //   实测踩过（2026-10-16，BACKLOG 头部 ⑥）——8 格（4×2）的接触表被按 4×4 复算，
+  //   于是 7 格落在图外、剩下的格子整体错位，而报告只说"尺寸对不上"。
+  //   解出来的行数还要能整除高度，否则这张 PNG 不是 anim sheet 的版面。
+  const rows = Math.round((H - pad) / (h + lab + pad));
+  if (!(rows >= 1)) return null;
   if (Math.abs(rows * (h + lab + pad) + pad - H) > 3) return null;
   return {
     tile: { x0: pad, y0: pad + lab, w, h },
     step: { dx: w + pad, dy: h + lab + pad },
+    cols, rows,
   };
 }
 
@@ -752,6 +763,34 @@ log(`  包络 ${an.envFps.toFixed(1)} 帧/秒（analyzePCM，HOP=1024）；静�
   }
 }
 
+/* ---- 源接触表的栅格（--sheet 路径）：必须按这张 PNG 自己解 ---- */
+/**
+ * 为什么必须在**排版之前**解：格子几何决定了"这张表里到底有几帧"，而帧数又决定输出的排版
+ * （`rows = ceil(n/cols)`）。实测踩过（2026-10-16，BACKLOG 头部 ⑥）：8 格的接触表（4×2）
+ * 配默认 `-n`，程序按 4×4 复算 ⇒ **7 格落在图外、剩下的格子整体错位**，而日志只说了
+ * "尺寸对不上 anim sheet 的版面公式"。所以：解得出栅格就以**表里的实际格数**为准
+ * （并在日志里说清忽略了你给的 `-n`）；解不出来才退回等分（那时也明说）。
+ */
+let sheetSrc = null;
+if (src.kind === 'sheet' && !o.img) {
+  const dec = decodePNG(readFileSync(src.file));
+  const g = guessSheetTile(dec.w, dec.h, Math.round(o.cols ?? 4));
+  if (g) {
+    sheetSrc = { dec, cols: g.cols, rows: g.rows, tile: g.tile, step: g.step };
+    const have = g.cols * g.rows;
+    if (o.n !== have) {
+      log(`  · 接触表实际是 ${g.cols}×${g.rows} = ${have} 格 ⇒ 按 ${have} 帧走（你给的 -n ${o.n} 被忽略；`
+        + `要与 -n 一致就重出：node scripts/anim.mjs sheet <任务> --from ${o.from} --to ${o.to} -n ${o.n}）`);
+      o.n = have;
+    }
+    o.cols = g.cols;
+  } else {
+    log(`  ⚠ 这张 PNG（${dec.w}×${dec.h}）对不上 anim sheet 的版面公式 ⇒ 退回等分（每格会带上相邻格与时刻标签的边）；`
+      + '要精确对齐就给几何：--img x,y,w,h [--img-step dx,dy]');
+    sheetSrc = { dec, cols: Math.round(o.cols ?? 4), rows: Math.ceil(o.n / Math.max(1, Math.round(o.cols ?? 4))), tile: null, step: null };
+  }
+}
+
 /* ---- 布局 ---- */
 const M = 56;                       // 左右留白
 const PX0 = M, PX1 = o.width - M;
@@ -812,7 +851,7 @@ if (src.kind === 'mp4') {
    * ③ 列平均色的连续性：画面被 grain 打得相邻列都不一样，反而在画面内部认出成片的"缝"。
    * 所以几何一律来自参数，不由像素猜。**逐帧精确对齐请走 mp4 主路径。**
    */
-  const dec = decodePNG(readFileSync(src.file));
+  const dec = sheetSrc ? sheetSrc.dec : decodePNG(readFileSync(src.file));
   let tile = null, step = null, how = '';
   if (o.img) {
     const a = String(o.img).split(',').map(Number);
@@ -821,9 +860,10 @@ if (src.kind === 'mp4') {
     const s = o.imgStep ? String(o.imgStep).split(',').map(Number) : null;
     step = s && s.length === 2 && s.every(Number.isFinite) ? { dx: s[0], dy: s[1] } : { dx: tile.w + 8, dy: tile.h + 28 };
     how = '--img 显式指定';
-  } else {
-    const g = guessSheetTile(dec.w, dec.h, cols, rows);
-    if (g) { tile = g.tile; step = g.step; how = '按 anim sheet 版面公式复算'; }
+  } else if (sheetSrc && sheetSrc.tile) {
+    // 栅格在上面（排版之前）就解好了：这里的 `cols`/`rows` 已经是**这张表自己的**行列数
+    tile = sheetSrc.tile; step = sheetSrc.step;
+    how = `按 anim sheet 版面公式复算（源 ${sheetSrc.cols}×${sheetSrc.rows} 格）`;
   }
   if (!tile) {
     log(`  ⚠ 这张 PNG（${dec.w}×${dec.h}）的尺寸对不上 anim sheet 的版面公式（${cols}×${rows} 格）。`);

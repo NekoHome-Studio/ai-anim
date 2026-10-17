@@ -12,8 +12,8 @@
 > **"不需要素材"≠"不能用素材"**：真实素材（团队 logo、产品截图、照片、纹理）可以当成**一张图层**画进来 ——
 > 加载成纹理后 `comp.draw(gl, tex, ctx.out, { rect, opacity, tint })`，或者直接画进 `ctx.text.ctx`
 > （Canvas2D 的 `drawImage`，最省事）。做法与坑见 `docs/COOKBOOK.md` §9。
-> 对外材料里，**真 logo / 真截图通常比手画一个更像、也更有说服力**；代价是它要等 IO，
-> 所以加载一律在 `setup`（可以 `async setup`）里做完，`render` 里不许有异步。
+> 对外材料里，**真 logo / 真截图通常比手画一个更像**；代价是它要等 IO —— 加载一律在
+> `setup`（可以 `async setup`）里做完，`render` 里不许有异步。
 
 为什么这件事能成立，关键只有一条：
 
@@ -64,8 +64,8 @@ npm run dev                                     # 浏览器里实时预览（空
 >
 > **① 这支片子用哪套风格？** 一行 `style: 'paper'` 就换掉整片观感（配色 / 字体栈 /
 > 背景母题 / 后处理基线 / 版面栅格 / 字幕样式一起换）。可选的：`node scripts/anim.mjs styles`。
-> **相邻两支片子尽量不要用同一套** —— 8 个镜头模板加上默认调色板，是一整支旧片子的逐像素冻结副本，
-> 连着用两支，观众看到的是"又是这个味"（这就是审美疲劳的来源，不是引擎画不出来）。但是如果风格契合的话，可以先向用户确定。
+> **相邻两支片子尽量不要用同一套** —— 11 个镜头模板加上默认调色板，是一整支旧片子的逐像素冻结副本，
+> 连着用两支，观众看到的就是"又是这个味"（审美疲劳的来源，不是引擎画不出来）；风格契合时先问用户。
 > 不写 `style` 时等于 `print`（= 引擎从前的默认观感，老任务一像素不变）。
 > 想先看效果：`node scripts/anim.mjs still _style-sampler -t 1.8,6,9.6 --style paper`。
 >
@@ -119,8 +119,8 @@ tasks/我的片子/
 
 改这两个文件就能出片。**不需要动 `src/` 里的引擎**（除非确实要加底层能力）。
 
-> **要写多少代码？** 常见镜头现在是**一行**——A 档镜头库 `src/shots/` 有 8 个参数化模板
-> （`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`），场景文件退化成「取模板 + 给参数」：
+> **要写多少代码？** 常见镜头现在是**一行**——A 档镜头库 `src/shots/` 有 11 个参数化模板
+> （`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid` `quote` `counter` `compare`），场景文件退化成「取模板 + 给参数」：
 >
 > ```js
 > // tasks/<任务>/scenes/chart.js
@@ -209,16 +209,11 @@ export default {
 
 **不写场景文件**：时间线的每一项可以直接写 `src/shots/` 的镜头模板。一个任务因此可以只有 `task.config.mjs`（见 §2.1）。
 
+形状与 §2.1 那份**逐字相同**（`type` 是模板名、其余键是模板参数，没有任何 `import`），
+只是不写 `style` / `captions`：
+
 ```js
-// tasks/<任务>/task.config.mjs —— 没有任何 import
-export default {
-  title: '我的片子', width: 1920, height: 1080, fps: 60, scale: 1,
-  timeline: [                                    // 数组、seq([...]) 都行
-    { type: 'title', title: '我的片子', sub: '副标题', dur: { beat: 8 } },
-    { type: 'chart', values: [0.3, 0.7, 0.95], title: '成绩', dur: 5, id: 'bars' },
-    { type: 'outro', dur: 3 },
-  ],
-};
+  timeline: [{ type: 'title', title: '我的片子', dur: { beat: 8 } }, { type: 'outro', dur: 3 }]
 ```
 
 **判据**（`src/timeline.js` 的 `isConfigNode()`）：节点是**对象**、`type` 是**字符串**、**没有 `scene`**。
@@ -228,10 +223,11 @@ export default {
 
 | 类别 | 键 | 说明 |
 |---|---|---|
-| **时间线字段** | `type` `id` `dur` `at` `overlap` `params` `post` `maxSamples` `handlesTransition` `note` `world` `worldPass` | 与 `cut(scene, { … })` 的第二个参数同义。⚠ `maxSamples` 是自适应子帧数的**上限**、**只会往下压**（合法档 8 / 24 / 72 / 216）—— 它是**提速**旋钮，**不是"加密采样"**：写 `maxSamples: 64` 会被夹到 24，画面反而更粗且不报错；想让拖影更细要调**小** `--tol`。`world: false` 是合法声明（"这一段我刻意不铺底"，背景守门会跳过），别为了骗过 `check` 去画一笔没意义的全屏 Pass |
+| **时间线字段** | `type` `id` `dur` `at` `overlap` `params` `post` `maxSamples` `handlesTransition` `note` `world` `worldPass` | 与 `cut(scene, { … })` 的第二个参数同义。⚠ `maxSamples` 是自适应子帧数的**上限**（合法档 8 / 24 / 72 / 216）、**只会往下压** —— 它是**提速**旋钮，**不是"加密采样"**：写 `maxSamples: 64` 会被夹到 24，画面更粗且不报错；拖影要更细就调**小** `--tol`。`world: false` 是合法声明（"这一段我刻意不铺底"，背景守门**不判**它的铺底、但会照常打出读数），别为了骗过 `check` 去画一笔没意义的全屏 Pass |
 | **模板参数** | **其余所有键** | 原样交给 `shot(type, { … })`；也可以显式写在 `params: { … }` 里（`params` 优先） |
 
-- `type`：模板名，共 8 个 —— `title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`。
+- `type`：模板名，共 11 个 —— `title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`
+  `quote` `counter` `compare`。
   名字就是 `SHOTS` 的键（也就是 `shot('名字')` 的那个名字）。
 - `id`：不写 = 模板自己的默认段名（重名自动加 `_2`）。**`--only` / HUD / 报错里用的就是这个段名。**
 - `dur`：不写 = **4 秒**（与 `cut(scene)` 一致）；也接受秒数 / `{ beat: n }` / `{ bar: n }` / `{ vo: 'line-id' }`（取某句旁白的长度）。
@@ -243,7 +239,7 @@ export default {
   别的模板要转场就写 `overlap`（引擎默认交叉溶解；文字量大的画面别用交叉溶解，见 §4.5）。配置档节点上也可以显式写 `handlesTransition` / `post` / `maxSamples` / `world`，语义与 `cut()` 完全一致。
 - 配置档节点**可以和 `cut(场景, {…})` / `seq()` 混在同一条时间线里**（`shot(...)` 返回的就是普通场景对象）；
   但**不能**和「已经展开好的段」（手搓的、带 `start`/`end` 的那种对象）混写 —— 见下面的报错。
-- **查参数**：`node scripts/anim.mjs shots`（列 8 个模板）、`node scripts/anim.mjs shots chart`（某个模板的全部参数与默认值）。
+- **查参数**：`node scripts/anim.mjs shots`（列全部模板）、`node scripts/anim.mjs shots chart`（某个模板的全部参数与默认值）。
 
 **写错就抛**（不静默吃默认值）。`{ type: 'chart', value: […] }`（少个 `s`）会得到这样一条报错 ——
 `tasks.js` 加上"哪个文件"、`timeline.js` 指出是数组第几项、`shots/index.js` 列出可用参数：
@@ -257,8 +253,8 @@ timeline[1] 这一段（type: "chart"）取不到镜头模板：
 模板名写错时，同一位置会是：
 
 ```
-timeline[0] 这一段（type: "quote"）取不到镜头模板：
-  未知的镜头模板 "quote"。可用的：title / chart / kinetic / whip / outro / wave / pulse / grid（看参数：node scripts/anim.mjs shots <名字>）
+timeline[0] 这一段（type: "quote2"）取不到镜头模板：
+  未知的镜头模板 "quote2"。可用的：title / chart / kinetic / whip / outro / wave / pulse / grid / quote / counter / compare（看参数：node scripts/anim.mjs shots <名字>）
 ```
 
 把配置档节点和「已经展开好的段」混写时：
@@ -274,7 +270,7 @@ timeline[0] 这一段（type: "quote"）取不到镜头模板：
 （时间线的每一项还会先过一遍 `assertNode()`：既不是 `cut()/seq()/par()` 的返回值、也不是配置档节点、
 又没有时长的手写段，一律抛错并提示"你是不是忘了调 cut()？"。）
 
-**什么时候必须回去写场景**：模板只有这 8 个，参数只能调它们**本来就有的画面**。要新视觉
+**什么时候必须回去写场景**：模板只有这 11 个，参数只能调它们**本来就有的画面**。要新视觉
 （raymarch 晶格、燃烧的引线、某支片子特有的母题）就回 §3 手写场景 / §3.5 的 `makeShot`；
 要自己掌控转场与背景时同理。**别为了"纯配置"把模板撑成万能 DSL。**
 
@@ -284,9 +280,8 @@ timeline[0] 这一段（type: "quote"）取不到镜头模板：
 
 ## 3.5 引擎自带的镜头工具：`src/kit/`
 
-以前每做一支片子都要把同一批小工具重写一遍（两份任务的 `scenes/_kit.js` 各约 450 行，
-语义几乎一样），而且第二次照抄时漏了画背景 —— 9 段里 8 段的底是纯黑。
-通用件现在在引擎里：
+以前每支片子都要重抄一份 `_kit.js`（两份任务各约 450 行，语义几乎一样），第二次照抄还漏了画背景
+（9 段里 8 段纯黑）。通用件现在在引擎里：
 
 ```js
 import { makeShot, put, fade, typed, panel, kicker, footer, marker, reticle,
@@ -321,7 +316,7 @@ export default makeShot('chart', {
 |---|---|
 | 一个完整镜头的骨架 | `makeShot(id, { setup, draw, post })` |
 | 一个 **Three.js 镜头**（真网格，第 3 种 3D） | `makeThreeShot(id, { camera, setup, update, overlay, post })`（见 §5.5 ③ 与 `docs/THREE.md`） |
-| 一个现成的整镜头（画面本身） | `shot('chart', { values: [...], title: '…' })`（A 档镜头库 `src/shots/`；也可以直接写进时间线，见 §3.2） |
+| 一个现成的整镜头（画面本身） | `shot('chart', { values: [...], title: '…' })`（A 档镜头库 `src/shots/`，也可直接写进时间线） |
 | 只要背景 + 转场 | `makeWorldKit(ctx)` → `wk.openFrame(ctx)` |
 | 按锚点写整行字 | `type.writeLine(text, x, y, { anchor })`（⚠ `type.write` 的 `align` 是**逐字**生效的） |
 | 整行淡入 | `fade(f.lt, delay)` → `{ alpha: [0,1], t, staggerDur }` |
@@ -377,7 +372,7 @@ import { makeTransitionKit, cameraPost, enterOffset } from '../../../src/core/tr
 
 export default {
   id: 'shot_a',
-  handlesTransition: true,                     // ⚠ 转场自己处理，否则引擎会先做交叉溶解
+  handlesTransition: true,                     // ⚠ 不写引擎会先做交叉溶解（见 §4 铁律）
   setup(ctx) { this.tk = makeTransitionKit(ctx); this.world = /* 全片共用的背景 Pass */; },
   render(ctx) {
     const { f } = ctx;
@@ -394,10 +389,8 @@ export default {
 > ⚠ **文字量大的画面不要用交叉溶解**（引擎默认的那个）：两屏字叠在一起会糊。
 > 必须让旧的"走掉"——这正是 `transitionPass` 存在的理由。
 
-**另一种更省事的"一台摄影机"**：`ctx.setXform({ x, y, scale, rot, anchor, edge })`
-把**这一段整张 `ctx.out`**（矢量 + 文字 + 引擎铺的共享背景）当**一组**做变换 ——
-所以它**做不出视差**（分层视差要把偏移量乘进每一层自己的绘制坐标，别指望 `setXform`）；
-它是"整层运镜"和整层透视（`setXform({ proj })` / `camXform(cam, W, H, k)`）的入口。
+**另一种更省事的"一台摄影机"**：`ctx.setXform({…})` 把这一段整张 `ctx.out` 当一组做变换 ——
+它**做不出视差**（分层视差要把偏移乘进每层自己的坐标），是整层运镜与整层透视的入口。
 详见 `docs/ENGINE.md` §3.5 与 §3.7.5。
 
 ---
@@ -429,7 +422,7 @@ export default {
 | `ca` | 色差强度，0 = 无 |
 | `saturation` / `contrast` | 1 = 不变 |
 | `lift` | 黑位**抬升量**（0 = 纯黑） |
-| `tint` | 线性 RGB 乘子（`[1,1,1]` = 不变）。偏暖 `[1, 0.9, 0.8]`、偏冷 `[0.85, 0.95, 1.1]` —— 全片统一色调用它 |
+| `tint` | 色调（线性 RGB 乘子，`[1,1,1]` = 不变）：偏暖 `[1, 0.9, 0.8]`、偏冷 `[0.85, 0.95, 1.1]` |
 | `invert` | 0 = 正常，1 = 反相（负片闪帧） |
 | `shake` | 位移 `[dx,dy]`。⚠ 单位是**物理像素**（`uv += shake/outSize`，`outSize` 是物理分辨率）——`--scale 2` 下同样数值的视觉位移**减半**，要跨分辨率一致就乘 `scale`；`center` 才是逻辑像素。正值右/下 |
 | `zoom` | **>1 推近**，1 = 不变 |
@@ -486,7 +479,7 @@ export default makeThreeShot('cube', {
 
 | 画面要什么 | 用哪一种 | 代价 / 边界 |
 |---|---|---|
-| 线框、柱林、走廊、塔 —— 几何你自己能用线给出来 | ① 解析投影 + 线段批 | 最便宜；**没有 z-test**，遮挡只能靠"按深度从远到近"自己排 |
+| 线框、柱林、走廊、塔 —— 几何你能用线给出来 | ① 解析投影 + 线段批 | **没有 z-test**，遮挡只能靠"按深度从远到近"自己排 |
 | 几何本身是数学式子：无限重复晶格、圆角融合、掏空、雕版排线 | ② raymarch | 每像素几十次 SDF，出片时间会明显变长 |
 | **成百上千个同样的单元**（实例化）、材质 / 光照 / 阴影、真深度真遮挡、以后要导入 `.glb` | ③ Three.js 真网格（`three` 已在 `dependencies`，**不是"最后的备选"**） | 每子帧重渲一次 + 一次全屏合成；写法和另两种一样简单（`makeThreeShot`） |
 
@@ -544,8 +537,8 @@ music.hit('kick', t, 0.12)          // 衰减脉冲（做撞击位移/闪白最�
 
 ### 6.5 有人讲解的片子（旁白/口播）
 
-**镜头多长由旁白决定，不是"总时长 ÷ 段数"平摊**（这条是硬经验：beast 第一版 63 秒塞 12 段，
-每段 2–4 个信息块，读不完被打回）。引擎现在自带这一层（`docs/NARRATION.md`）：
+**镜头多长由旁白决定，不是"总时长 ÷ 段数"平摊**（硬经验：beast 第一版 63 秒塞 12 段、每段
+2–4 个信息块，读不完被打回）。引擎自带这一层（`docs/NARRATION.md`）：
 
 ```sh
 node scripts/anim.mjs say <任务> [--voice zh-CN-YunxiNeural] [--rate -6%] [--dry-run]
@@ -565,10 +558,9 @@ export const SCENES = [
 ];
 ```
 
-`say` 会逐句合成、**量出真实时长**、解出每段的 `stretch`/`slot`，写
-`audio/timing.{json,mjs}` + `audio/narration.json` + `audio/<任务>-vo.mp3`，并打印一张时长表；
-场景侧只写一行 `const t = f.lt / (ctx.params?.stretch ?? 1)`。它会挡住的坑：
-**叠句**（相邻两句不许重叠）、放慢到 `MAX_STRETCH` 还不够、没有节拍源。
+`say` 会逐句合成、**量出真实时长**、解出每段的 `stretch`/`slot`，写 `audio/timing.{json,mjs}` +
+`audio/narration.json` + `audio/<任务>-vo.mp3` 并打印时长表；场景侧只写 `const t = f.lt / (ctx.params?.stretch ?? 1)`。
+它挡住的坑：**叠句**（相邻两句不许重叠）、放慢到 `MAX_STRETCH` 还不够、没有节拍源。
 ⚠ 旁白音频尾巴上自带约 0.9s 静音，引擎按"说到哪算到哪"计入时长（别用文件时长）。
 
 `task.config.mjs` 里这样接（`duration` 直接用生成的表）：
@@ -627,6 +619,9 @@ captions: true,                    // ← 就这一行；场景里一个字都�
 # 单帧（看图用）
 node scripts/anim.mjs still <任务> -t 1.5,2,3.25            # 逗号分隔多个时刻
 
+# 切点两侧 ±1.5s（三点采样不落在切点上；画方框那格 = 切点）
+node scripts/anim.mjs cuts <任务> [--window 1.5] [--n 7]
+
 # 接触表（一张图看一段时间，适合快速扫运动节奏）
 node scripts/anim.mjs sheet <任务> --from 0 --to 12 -n 16
 
@@ -647,8 +642,8 @@ node scripts/anim.mjs video <任务> --dry-run
 # （拼接错位 / 帧数不对 / 色彩空间不一致 / 成片是旧版本 —— 一次全查出来）
 node scripts/anim.mjs verify <任务>
 
-# 只看某几段（快，且不会因为别人写坏的场景而失败；名字写错会直接报错）
-# ⚠ --only 会把选中的段**平移到时间轴开头**，所以 -t 是"段内时间"
+# 只看某几段（快，且不会被别人写坏的场景拖累；名字写错直接报错）
+# ⚠ --only 把选中的段**平移到时间轴开头**，所以 -t 是"段内时间"
 node scripts/anim.mjs still <任务> -t 6 --only chart,title
 
 # 改了引擎或重构了场景之后：证明画面**没变**（比人眼看图可靠）
@@ -667,10 +662,9 @@ node scripts/anim.mjs perf <任务> --from 20 --to 24 --gpu high   # 对比核�
 node scripts/anim.mjs video <任务> --segments 8 --gpu high       # 组合使用
 ```
 
-**出片速度**（本机实测、1080p60、`samples=1`）：`3.8 fps → 7.5 fps`（`src/core/gl.js` 的
-`readPixels` 改成复用缓冲，2026-10），raymarch 类场景加 `--gpu high` 再翻倍。
-再往上一刀砍在**传输**上：页面现在推的是 **NV12**（GPU 上转好、每帧 3.11MB 而不是 RGBA 的 8.3MB），
-ffmpeg 用 `-pix_fmt nv12` 直接吃。瓶颈在哪里、量具与验收数字，见 `docs/PERF.md` §5.3–§5.4。
+**出片速度**（本机实测、1080p60、`samples=1`）：`3.8 → 7.5 fps`（`gl.js` 的 `readPixels` 改成复用缓冲），
+raymarch 类场景加 `--gpu high` 再翻倍。传输那一段已换成 **NV12**（每帧 3.11MB，不再是 RGBA 的 8.3MB），
+ffmpeg 用 `-pix_fmt nv12` 直接吃 —— 瓶颈与验收数字见 `docs/PERF.md` §5.3–§5.4。
 
 运动模糊是**逐帧自适应**的：静止帧 8 个子帧，普通运镜 24，甩镜/砸字会吃到 72 或 216。用 `--samples 1` 关掉（出图更快），`--shutter 0.2` 调窄。
 
@@ -681,8 +675,8 @@ ffmpeg 用 `-pix_fmt nv12` 直接吃。瓶颈在哪里、量具与验收数字�
 **挡不住编辑器的原子写**：它们会留下 `.xxx.tmpdir/…tmp`（**不以 `.md` 结尾**），Vite 的文件监听
 照样去 watch，撞上 `EBUSY` **直接让 Vite 进程崩掉**，渲染报 `net::ERR_CONNECTION_REFUSED`
 （`docs/STATUS.md` §14.5 第三次复现：`hashes demo --baseline` 跑到第 8 帧就断在这里）。
-唯一被实测挡住的是 **`out/**`** —— 所以**并发子代理的产出先落到 `out/_staging/`**，渲染结束之后再搬进仓库。
-（曾有过的"`docs/**`、`**/*.md` 可以安全写"是**错的**，那条已作废。）
+唯一被实测挡住的是 **`out/**`** —— **并发子代理的产出先落 `out/_staging/`**，渲染结束再搬进仓库。
+（"`docs/**`、`**/*.md` 可以安全写"那条**已作废**。）
 `video` 现在会在收尾时用 **ffprobe 复核自己的产物**（帧数不符就报错并删掉废文件），
 分块模式还会**逐块**复核 —— 所以「CLI 说 ✓ 但文件打不开」这种情况不会再发生。
 
@@ -700,7 +694,7 @@ scale 接受 1..4；场景写法不用改，只要 shader 里别拿物理像素�
 node scripts/anim.mjs check <任务>
 ```
 
-它会：静态扫描禁止的写法（`Math.random` 等）→ 逐段试渲染 → 报每段的平均亮度（几乎是全黑 = 场景没画东西）→ 打印浏览器控制台错误。
+它会：静态扫描禁止的写法（`Math.random` 等）→ 逐段试渲染 → 报每段平均亮度（近乎全黑 = 没画东西）→ 打印控制台错误。
 
 常见症状：
 
@@ -741,6 +735,7 @@ src/core/          引擎（改之前先读 docs/ENGINE.md）
 src/kit/           引擎自带的镜头工具（写场景先看这里，别再自己抄一份 _kit.js）
   index.js         统一出口
   layout.js        排版：put / writeLine / fade / typed / codeRow（不碰 GPU）
+  motion.js        运动规则：nudgeCurve / waterfallStagger / glowPeakCap（上限判据；docs/MOTION.md）
   elements.js      版面元件：panel / fillRect / kicker / footer / reticle / marker
   world.js         共享背景 + 一台摄影机 + 甩镜转场（worldPass / makeWorldKit）
   shot.js          makeShot()：把「一个镜头的骨架」包成一个函数
@@ -750,7 +745,7 @@ src/style/         **风格包**（style pack）：一行 `style: 'paper'` 换�
   index.js         STYLES / resolveStyle / gridFor（配色 / 字体 / 背景母题 / 栅格 / 后处理基线 / 字幕样式）
 src/shots/         A 档镜头库：一行取一个整镜头（`shot('名字', {…})`）
   index.js         shot / SHOTS / listShots（参数写错会抛错，不静默忽略）
-  title chart kinetic whip outro wave pulse grid   8 个模板（查参数：anim.mjs shots [名字]）
+  title chart kinetic whip outro wave pulse grid   11 个模板（查参数：anim.mjs shots [名字]）
 src/timeline.js    时间线 DSL：seq / cut / par / at（cut 支持 { world } 声明共享背景；配置档节点 { type: '…' } 见 §3.2）
 src/tasks.js       任务发现与加载（配置档时间线的选路、风格包解析都在这里）
 src/app.js         浏览器入口（预览 + 离屏协议）
@@ -771,19 +766,17 @@ docs/              ENGINE.md（引擎规格）、COOKBOOK.md（做法手册）�
                    旧文档里那些"没做的"小节都以这份为准 —— **要动引擎先看这份**）、
                    STYLE.md（**风格包与反审美疲劳**：怎么换、每片必须换掉的三项、节奏数值）、
                    CAPTIONS.md（**字幕层与信息分工**：画面只放标注、句子交给旁白与字幕）、
+                   MOTION.md（**运动规则表**：什么时候用哪个、数值上限、四级证据分级）、
+                   LAYOUT.md（**版面纪律与「版面守门」**：一屏一个主体、主体之外 ≤ 2 块、
+                   `focus` 怎么声明、`check` 的三条判据与阈值 —— 写画面之前先看这份）、
                    SCENE-BRIEF-TEMPLATE.md（**写分镜/派子代理时照这份起草**，含"本片必须不同的三项"）、
                    NARRATION.md（**口播/旁白这一层：A/B/C 三档都已落地**，做带旁白的片子先看）、
                    PERF.md（**渲染性能实测与验收口径**：瓶颈、并行/NVENC、`-copyts`、verify 取时坑）、
                    FACTS-TEMPLATE.md（对外材料的事实出处模板）、
                    THREE.md（**第 3 种 3D：Three.js 镜头**——怎么用、三种背景合成模式、
                    确定性铁律、投影贴标签、坑清单；写 3D 镜头先看这份）、
-                   REFERENCE-world-execute.md（**外部参考项目 `world.execute (me) ;` 的拆解**：
-                   画面/剪辑/播放器/数据管线四层，每条带 `文件:行号` 证据；§4 是可借鉴的机制、
-                   §6.5 是"它为什么好看"的判断。⚠ **它只记"别人怎么做"，待办一律以 BACKLOG.md 为准**）、
-                   REFERENCE-agent-video-projects.md（**另外三个外部项目的横向对比**：video-use /
-                   hyperframes / hypit 各自最值得抄的一件事、三处交叉印证的结论、统一的不建议清单；
-                   逐文件证据在三份 `REFERENCE-video-use.md` / `-hyperframes.md` / `-hypit.md` 里。
-                   ⚠ 同样是"只记别人怎么做"，**可执行条目在 BACKLOG.md §1.B**）
+                   REFERENCE-*.md（**外部项目的拆解与横向对比**：画面/剪辑/播放器/数据管线四层，
+                   每条带 `文件:行号` 证据。⚠ 它只记"别人怎么做"，可执行条目一律在 BACKLOG.md §1.B/§1.C）
 docs/history/      **归档**：已完成 / 已过期的东西，只作历史参考，**不要当待办读**
                    （索引见 docs/history/README.md）：
                    HANDOFF.md（引擎早期的交接单）、HANDOFF-THREEJS.md（Three.js 接入提案）、
@@ -793,16 +786,17 @@ docs/history/      **归档**：已完成 / 已过期的东西，只作历史参
 tools/             诊断与回归脚本（probe-*.mjs / test-*.mjs / smoke-*.mjs），不参与出片
   regress-all.mjs  整份回归清单一条命令跑完（日志与汇总在 out/_regress/）
   lint-narration-dup.mjs  静态检查：**画面文字逐字复述旁白**（"两条字幕"的元凶），报 file:line
-  lint-fabricated-numbers.mjs 静态检查：**画面上的数字有没有出处**（查 tasks/<任务>/FACTS.md），报 file:line；
-                   只扫"数值显示位"，没有 FACTS.md 的任务安静跳过（1-22；见 §10.10）
-  test-fabricated-numbers.mjs 上面那个工具的纯 JS 自测（139 项）：正例必须响 / 反例必须静 /
-                   **显示位条数钉死**（谁放宽判据当场红）/ 空 ≠ 干净 / 退出码三档。
-                   夹具在 `tools/fixtures/lint-numbers/tasks/`
+  test-layout.mjs  版面守门判据的纯 JS 自测（31 项，不需要 GPU）：块怎么合并、主体图连通、
+                   母题保留区豁免、"没声明 focus = 没判"、报告形状与接线自检（见 docs/LAYOUT.md）
+  lint-fabricated-numbers.mjs 静态检查：**画面上的数字有没有出处**（查 FACTS.md），报 file:line（1-22；§10.10）
+  test-fabricated-numbers.mjs 上面那个的纯 JS 自测（183 项）；夹具 tools/fixtures/lint-numbers/
   scene-harness.mjs  离线跑场：用假 ctx 把整条时间轴 render 一遍（抓未定义变量 / 确定性破例）
   test-style.mjs   风格包与字幕层的纯逻辑回归（含"不写 style 时像素不变"的底线断言）
   test-blocks.mjs  方块世界 kit 的纯 JS 回归（面朝向判据 / 深度排序 / 摄影机关键帧）
   probe-raymarch.mjs  raymarch/3D 层的量具：14 个 shader 变体 + 直接读浮点缓冲（NaN/Inf 分开数）
   probe-three.mjs   Three.js 桥的量具：朝向 / 两条颜色管线是否一致 / 线性 alpha（10 项判据）
+  probe-post-ab.mjs / -ab2.mjs  后处理 A/B 的读数脚本（配套 tasks/_post-lab/；要 Chrome 且先渲帧，
+                   属**手动量具**、不进回归清单；BACKLOG 0-6 用得上）
   tts-edge.py      默认 TTS 驱动（edge_tts 的 WordBoundary → 词级时间戳）
   stub-tts.mjs     确定性假驱动（离线回归用，不联网）
 out/               渲染产物（图、mp4、日志；`out/_regress/` 是回归日志）
@@ -813,14 +807,14 @@ out/               渲染产物（图、mp4、日志；`out/_regress/` 是回归
 ## 10. 交付前自检
 
 1. `node scripts/anim.mjs check <任务>` 无报错、无空档告警、每段都不是全黑，且**背景守门通过**
-   （`check` 现在每段采 **15% / 50% / 85% 三个点**、各渲单子帧与多子帧两条路径；
-   过曝、两条路径亮度不一致、**段内亮度不均**、**交叠段没铺整帧背景**都会报）
+   （每段采 **15% / 50% / 85% 三点** × 单/多子帧两条路径：过曝、两条路径不一致、
+   **段内亮度不均**、**交叠段没铺整帧背景**都会报）
 2. `still` 抽查了**每一段**的中间帧，并且**真的用 Read 工具看了图**
    （配置档任务同样适用：**段名就是模板名，或者你写的 `id`**，`--only` 用的就是它 ——
    例如 `node scripts/anim.mjs still <任务> -t 6 --only chart,title`）
-3. 有音乐的片子：镜头切割点对齐在拍上
-4. `video` 出片成功 —— **CLI 自己会用 ffprobe 复核产物**（帧数不符就报错并删掉废文件，
-   分块模式逐块复核）；想再确认一遍就 `node scripts/anim.mjs verify <任务>`
+3. 有音乐的片子：镜头切割点对齐在拍上（`dur: { beat: n }`）
+4. `video` 出片成功 —— **CLI 会用 ffprobe 复核产物**（帧数不符就报错并删废文件，分块模式逐块复核）；
+   想再确认一遍就 `node scripts/anim.mjs verify <任务>`
 5. 段与段之间没有黑隙（`check` 会报「空档」），最后一段结尾有淡出或明确收尾
 6. 代表某个团队/项目对外发声的片子：`tasks/<任务>/FACTS.md` 逐句标了出处
    （模板见 `docs/FACTS-TEMPLATE.md`），并列出「刻意没写的东西及原因」
@@ -828,14 +822,18 @@ out/               渲染产物（图、mp4、日志；`out/_regress/` 是回归
    说话占比没有高到离谱（>80% 它会自己提醒）；每段最后一句说完之后还有 `TAIL` 秒画面
    （`solveTiming` 保证并打印）。改完旁白先跑 `node tools/test-say.mjs`（不需要 GPU）
 8. **这一支的风格跟上一支不一样**（`docs/STYLE.md`）：相邻两支片子不要用同一套 `style` ——
-   至少换掉「主色/介质、字体、背景母题」里的两项。8 个镜头模板 + 默认调色板是一整支旧片子的
-   逐像素冻结副本，连着用两支，观众看到的就是"又是这个味"。
+   至少换掉「主色/介质、字体、背景母题」里的两项 —— 11 个模板 + 默认调色板就是上一支片子的冻结副本。
    出对比图：`node scripts/anim.mjs still <任务> -t <时刻> --style paper`（临时覆盖，不改文件）。
 9. **有旁白的片子开了引擎字幕**（`docs/CAPTIONS.md`）：`captions: true`，而且
    `node tools/lint-narration-dup.mjs <任务>` **零命中**（画面文字逐字复述旁白 = 观众说的"两条字幕"）；
    `check` 的输出里没有「压进字幕保留带」的警告。
    平台要软字幕就 `node scripts/anim.mjs subs <任务>`（**开过 captions 就别再烧一遍**）
-10. **画面上的数字必须有出处**（`docs/BACKLOG.md` 1-22；判据与边界见 `docs/FACTS-TEMPLATE.md` ★ 一节）。
+10. **一屏只让观众看一件事**（`docs/LAYOUT.md`）：`check` 的「版面守门」那一段没有 `⚠`，
+    并且**声明了主体**（场景对象上写 `focus: 'center'` 或 `{ x, y, w, h }`）—— 没声明时
+    「主体区里压了几块 / 主体之外还有几个看的地方」这两条**没跑**，会进 `skipped`。
+    判据是「主体之外 ≤ 2 块、每屏 ≤ 6 块字」，默认只 warn、**交付自检加 `--strict`** 才当门。
+    观众对钠那期的原话就是这一条：「有些动画元素相互遮挡害得我搞不清楚到底要看哪个主体」。
+11. **画面上的数字必须有出处**（`docs/BACKLOG.md` 1-22；判据与边界见 `docs/FACTS-TEMPLATE.md` ★ 一节）。
     **我们的画面全是代码算的，所以"编一个数字"的成本是零** —— 这一条只能靠硬规则 + 交付前自审：
     **绝不在帧尺度上编造数字、增量、日期、计数**；数值显示位（`type.write` 的字符串、`chart` 的
     `values`、`codeRow` 的文本、镜头模板的 `title`/`sub`/`footer`、旁白与字幕）里的字面量数字，
@@ -844,8 +842,13 @@ out/               渲染产物（图、mp4、日志；`out/_regress/` 是回归
     （计数器、延迟条）同样要登记 —— 一行话，换掉一次误报。
     自查：`node tools/lint-fabricated-numbers.mjs <任务>` **零命中**
     （`--slots` 复核它把哪些位置当成数值显示位，`--explain` 连找到出处的也打出来附行号）。
-    ⚠ 它只扫"数值显示位"：坐标 / 字号 / 时长 / 阈值 / 颜色分量 / 注释 / 算出来的数都不算。
-    ⚠ 没有 `FACTS.md` 的任务会被**安静跳过**并打印「没有事实表 ⇒ 这一项没验」—— 那是**没验**，不是通过
+    ⚠ 它只扫"数值显示位"：坐标 / 字号 / 时长 / 阈值 / 颜色分量 / 注释都不算；
+    而**算出来的数**（模板串插值 / 字符串拼接 / `String()` / `.padStart()` / `.toFixed()` / `values` 里的变量）
+    单列一段 `算出来的值：N 处 —— 这些位置静态查不到等于几，这一项**没验**`（**0 处也打一行**）。
+    它**不进退出码** ⇒ "零命中"不等于这些位置验过了 —— 要么在 FACTS.md 里**登记口径**，要么写成占位符。
+12. **自检最多 3 轮，3 轮不过就交人**（第 4 轮开始就是在猜）；发布前派一个只挑毛病不夸的审查者，
+    交回**按时间码排序的问题清单 + 证据**（哪一秒、哪张图、什么问题）。两条的原文与理由见
+    [`docs/REFERENCE-video-use.md`](docs/REFERENCE-video-use.md) §3.3；切点优先看 `anim cuts`。
 
 ### 出问题时按这个顺序查
 
@@ -855,6 +858,7 @@ node scripts/anim.mjs check <任务> --quick     # 冒烟：每段只采 50% 一
 node scripts/anim.mjs check <任务> --strict    # 把 `skipped:`（没跑 ≠ 通过）也当成失败；默认不改退出码
 node scripts/anim.mjs audit <任务>             # 每个交叠段在交叠期到底画了什么
 node scripts/anim.mjs still <任务> -t ...      # 出图，用 Read 看
+node scripts/anim.mjs cuts <任务>              # 每个切点两侧 ±1.5s 的接触表（画方框那格 = 切点）
 node scripts/anim.mjs probe-alpha <任务>       # 整行淡入（alpha）到底生效没有
 node scripts/anim.mjs determinism <任务> --from 0 --frames 40  # 顺向/反向/单次 seek：跨帧依赖定位（有分叉退出码 1）
 node scripts/anim.mjs shake <任务> [--from 0 --to 48] [--json] # 抖动体检：振动 / 收尾还在晃（有问题退出码 1）

@@ -395,6 +395,39 @@ if (!real) {
   check('判据能对这个真实文件给出三档之一', ['ok', 'warn', 'error'].includes(a.tier), a.tier);
 }
 
+/* ── 7. `seconds`（`-t`）真的截断了吗？截断读数是**不能当结论**的（BACKLOG 头部 ⑤） ──
+ *
+ * `check --quick` 用这一档省钱：4 分钟的轨整条要 6–14s，而快捷体检只想看数字有没有离谱。
+ * 判据必须钉住两件事，否则"省时档"会静默变成一个**看着像结论的错数字**：
+ *   ① `-t` 落在正确的位置（`-i` 之后、`-af` 之前）—— 放错位置它就成了输入选项，语义完全不同；
+ *   ② 它**真的**只量了前 N 秒：拿"先静音、后有声"的夹具量，截断那次的整合响度必须掉下去。 */
+console.log('\n⑦ seconds（-t）：位置对、真的截断（截断读数不当结论用）');
+const winFile = path.join(DIR, 'fixtures', 'silence-then-tone.wav');
+const toneCh = `${10 ** (-14 / 20)}*sin(2*PI*997*t)`;
+ff(['-y', '-v', 'error', '-f', 'lavfi',
+  '-i', `aevalsrc=0|0:s=48000:d=1.5`,                    // 先 1.5 秒**数字静音**
+  '-f', 'lavfi', '-i', `aevalsrc=${toneCh}|${toneCh}:s=48000:d=3`,   // 再 3 秒 −14dBFS 的测试音
+  '-filter_complex', '[0:a][1:a]concat=n=2:v=0:a=1',
+  '-c:a', 'pcm_s16le', winFile]);
+const winFull = measureLoudness(winFile);
+const winPart = measureLoudness(winFile, { seconds: 1.5 });
+console.log(`     整条 3+1.5s：${formatLoudness(winFull)}  seconds=${winFull.seconds}`);
+console.log(`     只量前 1.5s：${formatLoudness(winPart)}  seconds=${winPart.seconds}`);
+check('seconds 会回显在结果里（没截断时是 null）', winFull.seconds === null && winPart.seconds === 1.5,
+  `${winFull.seconds} / ${winPart.seconds}`);
+// ⚠ 这一条**是量出来的**：`-t` 放在 `-i` 之后（输出侧）时 muxer 只写 1.5s，
+//   但滤镜图仍然吃到整条轨 ⇒ loudnorm 报的还是全片读数（实测 -14.27 vs 静音应有的 -inf）。
+//   所以判据写死"输入侧"：`-t` 必须在 `-i` **之前**。
+check('-t 是**输入侧**选项（在 -i 之前；放到输出侧就成了"看着像结论的错数字"）',
+  winPart.argv.indexOf('-t') >= 0 && winPart.argv.indexOf('-t') < winPart.argv.indexOf('-i'),
+  winPart.argv.join(' ').slice(0, 120));
+check('整条不给 -t', !winFull.argv.includes('-t'));
+check('截断那一次**真的**只看到了静音（读数必须掉下去）',
+  !Number.isFinite(winPart.i) || winPart.i < winFull.i - 20,
+  `整条 ${Number(winFull.i).toFixed(2)} → 前 1.5s ${winPart.i}`);
+check('这正是"截断读数不能当结论"的证据：两次的 LUFS 不一样',
+  winPart.i !== winFull.i, `${winFull.i} vs ${winPart.i}`);
+
 /* ── 收尾 ── */
 console.log(`\n${'─'.repeat(64)}`);
 console.log(`通过 ${pass}/${pass + fail}${fail ? `　❌ 失败 ${fail}` : '　✅ 全部通过'}`);

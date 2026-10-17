@@ -27,7 +27,7 @@ import { resolveStyle } from './style/index.js';
  *                                   · 字符串：一条轨，分析节拍与封装成片都用它（老写法）；
  *                                   · 对象：**分轨**。`music` 只用来分析节拍，`mix`（或 `vo`）
  *                                     交给 ffmpeg 封装。做带旁白的片子必须这样写 ——
- *                                     从混音里测 bpm 会被人声带偏（见 docs/IMPROVEMENTS-2 P1-4）。
+ *                                     从混音里测 bpm 会被人声带偏（见 docs/history/IMPROVEMENTS-1-3.md P1-4）。
  * @property {string} [analysis]   预计算好的音频特征 json（CLI: npm run video 前会自动生成）
  * @property {string} [lyrics]     歌词 json（词级时间戳）
  * @property {{lines?: any[], source?: string}} [narration]
@@ -39,7 +39,7 @@ import { resolveStyle } from './style/index.js';
  * @property {any[]} timeline      段列表（见 timeline.js 的 seq()）
  * @property {(ctx: any) => any} [world]  全片共用的背景：`(ctx) => Pass`。
  *                                   时间线里写 `cut(shot, { world: 'auto' })` 的段由**引擎**每帧先铺它，
- *                                   场景不必记得调用（「漏了就静默黑底」这个坑由此封死，见 docs/IMPROVEMENTS.md P0-2）。
+ *                                   场景不必记得调用（「漏了就静默黑底」这个坑由此封死，见 docs/history/IMPROVEMENTS-1-3.md P0-2）。
  *                                   `src/kit/world.js` 的 `worldPass(ctx, opts)` 就是一个现成的实现。
  */
 
@@ -103,7 +103,7 @@ export async function loadTask(name, { music = null } = {}) {
    */
   if (spec.world == null && mod.world != null) spec.world = mod.world;
   /**
-   * **音频分轨**（`docs/IMPROVEMENTS-2.md` P1-4）：`audio` 可以是字符串（一条轨）
+   * **音频分轨**（`docs/history/IMPROVEMENTS-1-3.md` P1-4）：`audio` 可以是字符串（一条轨）
    * 或 `{ music, vo, mix }`。
    *
    * 为什么要分：做带旁白的片子时只交给引擎一条混音轨，于是 `analyze` 从**人声 + 配乐**
@@ -168,7 +168,7 @@ export async function loadTask(name, { music = null } = {}) {
         });
       } catch (err) {
         // 把任务名带上：同一条时间线写错，报错里有没有 "tasks/<名字>/task.config.mjs"
-        // 决定了能不能一眼找到该改哪个文件（docs/IMPROVEMENTS-2 P0-2）。
+        // 决定了能不能一眼找到该改哪个文件（docs/history/IMPROVEMENTS-1-3.md P0-2）。
         const msg = err && err.message ? err.message : String(err);
         throw new Error(`tasks/${name}/task.config.mjs 的时间线不合法：\n${msg}`);
       }

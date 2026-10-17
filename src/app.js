@@ -14,6 +14,8 @@ import { Engine } from './core/engine.js';
 import { makePalette } from './core/palette.js';
 import { MusicData } from './core/audio.js';
 import { loadTaskList, loadTask } from './tasks.js';
+import { auditUnderRequires, planWorldAudit, worldAuditVerdict } from './timeline.js';
+import { layoutVerdict, LAYOUT_LIMITS } from './layout.js';
 import { DEFAULT_POST } from './core/post.js';
 
 const q = new URLSearchParams(location.search);
@@ -224,7 +226,7 @@ async function boot() {
     duration: task.duration,
     only: q.get('only'),        // '--only a,b'：只加载这几段（快，且隔离写坏的场景）
     // 全片共享背景（可选）：时间线里声明 { world: 'auto' } 的段由引擎先铺它。
-    // 这样"忘了画背景"不再是静默黑底 —— 见 docs/IMPROVEMENTS.md P0-2。
+    // 这样"忘了画背景"不再是静默黑底 —— 见 docs/history/IMPROVEMENTS-1-3.md P0-2。
     worldPass: task.world ?? null,
     // 风格包（docs/STYLE.md）：色板已在上面合成，这里传进来的是 grid / post / captions / fonts / motif
     styleResolved: task.styleResolved ?? null,
@@ -399,6 +401,33 @@ function comparePixels(a, b) {
   };
 }
 
+/**
+ * 版面守门的采样时刻（纯函数，tools/test-layout.mjs 钉住）。
+ *
+ * 三点：15% / 50% / 85% —— 与逐段亮度守门同一套（入场头 1 秒最容易出问题，只看中点会漏）。
+ * ⚠ 15% 落进开头 0.4s 时去掉：那时字多半还在逐字入场，"还没揭晓"不该算成"一屏挤了这么多"。
+ */
+export function planLayoutSamples(start, dur) {
+  const pts = [0.15, 0.5, 0.85].map((k) => start + dur * k);
+  const keep = pts.filter((t, i) => !(i === 0 && t - start < 0.4));
+  return keep.length ? keep : [start + dur * 0.5];
+}
+
+/**
+ * 这一支片子的版面阈值：默认 LAYOUT_LIMITS，任务可以用 layout 字段覆盖（见 docs/LAYOUT.md）。
+ * 只覆盖认识的键 —— 写错键名不会静默变成"没有上限"。
+ */
+export function layoutLimits(overrides) {
+  const out = { ...LAYOUT_LIMITS };
+  if (overrides && typeof overrides === "object") {
+    for (const k of Object.keys(out)) {
+      const v = Number(overrides[k]);
+      if (Number.isFinite(v) && v >= 0) out[k] = v;
+    }
+  }
+  return out;
+}
+
 /** base64 → Uint8Array（`atob` 出来的是 latin1 字符串，逐字节取 code）。 */
 function b64Bytes(b64) {
   const bin = atob(b64);
@@ -460,6 +489,11 @@ const api = {
       narration: (engine?.narration?.lines ?? []).map((l) => ({
         id: l.id, text: l.text, start: l.start, end: l.end,
       })),
+      /**
+       * 版面守门的阈值（docs/LAYOUT.md）：任务可以用 layout: { maxBlocks: 8 } 覆盖。
+       * check 会把它打出来 —— 阈值是"看得见"的，改没改一眼就知道。
+       */
+      layoutLimits: layoutLimits(engine?.style?.layout),
       /** 风格/版面的运行期警告（kit 的 assertInBand / captionNote 过长等会 push 到这里） */
       warnings: engine?.warnings ?? [],
     };
@@ -680,7 +714,7 @@ const api = {
       // （Y 平面 w×h + 交错 UV 平面 w/2×h/2 = 每帧 3.11MB，比 RGBA 少 62%）。
       // 载荷格式由 `scripts/anim.mjs` 的 ffmpeg 参数（`-pix_fmt nv12`）对接，两边必须一起改。
       // shake 搭车回去是**故意的**：CLI 收尾时能顺手统计「这一整片是不是逐帧白噪声」
-      // 并当场提醒 —— 不用等成片出来、更不用拿成片做互相关（docs/IMPROVEMENTS-3.md 建议 F）。
+      // 并当场提醒 —— 不用等成片出来、更不用拿成片做互相关（docs/history/IMPROVEMENTS-1-3.md 建议 F）。
       // ⚠ 改帧头长度要同时改 scripts/anim.mjs 里读它的地方（搜 `FRAME_HEADER`）。
       const sh = engine.lastPost?.shake;
       const out = new Uint8Array(12 + px.length);
@@ -885,50 +919,185 @@ const api = {
    * 不报任何错 —— 亮度统计也抓不到，因为文字/面板/grain 自己就有亮度（实测 0.054，
    * 而"全黑"判据是 0.004 的 13 倍）。做 fidus 时 9 段里 8 段这样，直到抽帧才看出来。
    *
-   * 判据是**实际发生的绘制**（`gl.paint` 记账）：交叠期一帧里 `any === 0`
-   * 就说明这一段根本没往画面里画东西（`gl.clear` 不算绘制）。
-   * 明确写了 `{ world: false }` 的段跳过检查（那是"我自己负责整帧"的声明）。
+   * 判据是**实际发生的绘制**（`gl.paint` 记账）：一帧里**一次整帧覆盖都没有**（`full === 0`）
+   * 就说明这一段根本没往画面里铺底（`gl.clear` 不算绘制）。
+   *
+   * ── 2026-10-16 两处收紧（BACKLOG 头部 ①⑦）────────────────────────────────────
+   *
+   * ① **`handlesTransition` 读场景那一份兜底**（`it.handlesTransition ?? it._scene?.handlesTransition`）。
+   *    引擎读的是**场景**上的标记（`engine.js` 的 `k > 0 && !scene.handlesTransition && under`），
+   *    而守门以前只读**段**上的：配置档节点上没写时，段对象上是 `undefined`，
+   *    模板自带的那份（`src/shots/whip.js` 的 `handlesTransition: true`）到不了段对象 ⇒
+   *    守门把一段"声明了转场"的段报成 `n`，少算一段。**画面一直是对的**（引擎走场景那份），
+   *    错的只是这一行报告 —— 但"报告与引擎口径不齐"本身就会让人误判。
+   *
+   * ② **每个交叠段采两个时刻**：交叠窗中点（判"铺没铺底"）+ **交叠窗之后**的中点（`tail`）。
+   *    以前只采中点，于是"交叠窗之外的部分"没有任何守卫 —— `_config-lab` 的甩镜
+   *    19.50–20.50 那 1 秒就是这样一段没人看的区间（"如果那 1 秒真的漏了底，守门也抓不到"）。
+   *    **判据仍然只落在交叠窗中点**（`full === 0 && risky`）；窗后中点**只做读数**。
+   *    这一条是踩过假报之后定下来的：转场模板在窗后走的是"没有 under"的分支，而那条分支
+   *    本来就可能是近黑的（`whip` 的设计值 0.037–0.051）—— 第一版把同一条判据也压上去，
+   *    `check demo` 当场把一个**设计如此**的尾巴报成"没铺背景"（假报比不报贵）。
+   *    判据本身在纯函数 `src/timeline.js` 的 `worldAuditVerdict()` 里，单测钉住。
+   *    顺带把每一刻的**画面平均亮度**也带回去（`samples[].mean`，按每 4 个像素取 1 个估），
+   *    让"这一秒到底黑没黑"在 `anim audit` 里看得见 —— 亮度只是**读数**，不 gate。
+   *
+   * 仍然**不判**的两件事（刻意的）：
+   *   · 没有 `handlesTransition`、也没有声明 `world` 的段 —— 清个底色就够了，
+   *     不该被要求画全屏 Pass（那种段本来就没有转场语义）；
+   *   · `world: false` 的段**不判"铺没铺底"**（那是它自己的声明）—— 它们进的是
+   *     返回值的 `selfBase` 那一栏，**读数照给**（`samples[].mean` / `dark`），
+   *     只是不进 `results` 那条判据。
    */
-  worldAudit() {
+  async worldAudit() {
     if (!engine) throw new Error('引擎未就绪');
     const items = engine.timeline;
     const results = [];
-    for (let i = 1; i < items.length; i++) {
-      const it = items[i], prev = items[i - 1];
-      // 只查「与前一段有交叠」的段：只有那时才有转场语义（tin/tout/under 才有意义）。
-      // ⚠ 拿 it.start 与 prev.end 比，不是比结束时刻：结束时刻被 overlap 推走过，
-      //   用它判断会把整段漏掉（第一版就是这么漏判的）。
-      if (it.start >= prev.end) continue;
-      if (it.world === false) continue;
-      const span = Math.min(prev.end, it.end) - it.start;
-      const t = it.start + Math.max(0.02, span * 0.5);
-      const w = it.world === 'auto' ? 'auto' : (it.world ? 'custom' : 'none');
-      try {
-        engine.render(t, { samples: 1, toScreen: false, seeked: true });
-      } catch (err) {
-        results.push({ id: it.id, t, error: String(err && err.message ? err.message : err) });
-        continue;
+    /**
+     * 声明了 `world: false`（"整帧底我自己负责"）的段**单独放**：不判"铺没铺底"（那是它的声明），
+     * 但**仍然采两个时刻的读数** —— 声明不等于"这段没人看着"。
+     * `_config-lab` 的甩镜 19.50–20.50 那 1 秒就是靠这一栏第一次有了读数（BACKLOG 头部 ⑦）。
+     */
+    const selfBaseRows = [];
+    /** 显示空间平均亮度（与 `stats()` 同一套权重；每 4 个像素取 1 个，够判"是不是一片黑"） */
+    const meanOf = () => {
+      const buf = engine.readPixels();
+      let sum = 0, n = 0;
+      for (let i = 0; i < buf.length; i += 16) {
+        sum += (buf[i] * 0.2126 + buf[i + 1] * 0.7152 + buf[i + 2] * 0.0722) / 255;
+        n++;
       }
-      const paint = it._lastPaint ?? null;
-      // 判据：这一帧里**一次整帧覆盖的绘制都没有**，而且没有声明引擎铺的共享背景。
-      //   · 整帧覆盖 = 全屏 Pass（blend:false）。文字/矢量层都是带混合的，不算。
-      //   · `world: 'auto'` / 自定义 world 的段由引擎先铺底，天然满足。
-      //   · 只有"声明了 handlesTransition / 转场"的段会被判为问题：
-      //     没有转场语义的简单段清个底色就够了，不该被要求画全屏 Pass。
-      const full = paint?.full ?? -1;
-      const risky = !!it.handlesTransition || w !== 'none';
-      results.push({
-        id: it.id, t,
-        handlesTransition: !!it.handlesTransition,
-        drawAny: paint?.any ?? -1,
-        full,
-        lines: paint?.lines ?? -1,
+      return n ? sum / n : 0;
+    };
+    // 采样计划（在哪几个时刻渲、哪几段判、哪几段只给读数）是**纯函数**，见
+    // `src/timeline.js` 的 `planWorldAudit()` —— 离线单测 `tools/test-timeline-audit.mjs`
+    // 钉住"交叠窗中点 + 窗后中点"两个时刻与 `world: false` 的分流（BACKLOG 头部 ①⑦）。
+    for (const plan of planWorldAudit(items)) {
+      const it = items[plan.index];
+      const { handlesTransition, selfBase, declaredWorld: w, risky, times } = plan;
+      const samples = [];
+      for (const t of times) {
+        try {
+          await api.frame(t, { samples: 1 });
+        } catch (err) {
+          samples.push({ t, error: String(err && err.message ? err.message : err) });
+          continue;
+        }
+        const paint = it._lastPaint ?? null;
+        samples.push({
+          t,
+          full: paint?.full ?? -1,
+          any: paint?.any ?? -1,
+          lines: paint?.lines ?? -1,
+          trace: paint?.trace ?? null,
+          mean: meanOf(),
+        });
+      }
+      const first = samples[0] ?? {};
+      // 判据是**纯函数**（`src/timeline.js` 的 `worldAuditVerdict()`，离线单测钉住）：
+      //   · `missing`  只看**交叠窗中点**那一个采样点（"整帧覆盖"= 全屏 Pass（blend:false）；
+      //     文字/矢量层都是带混合的，不算。`world: 'auto'` / 自定义 world 的段由引擎先铺底，
+      //     天然满足 —— 引擎那一笔也算进 full）。
+      //   · 窗后中点**只做读数**：转场模板在窗后走"没有 under"的分支，本来就可能是近黑的
+      //     （`whip` 的设计值 0.037–0.051）—— 把同一条判据也压上去会当场假报（`check demo` 实测）。
+      const verdict = worldAuditVerdict(plan, samples);
+      const bare = verdict.missing ? [first] : [];
+      // `world: false` 的段进 `selfBaseRows`：不判"铺没铺底"，但读数照给（CLI 那边单独打印）
+      (selfBase ? selfBaseRows : results).push({
+        id: it.id,
+        // 兼容旧字段（`anim audit` 的表格与 CLI 的判据读的是这几个）
+        t: first.t ?? it.start,
+        handlesTransition,
+        drawAny: first.any ?? -1,
+        full: first.full ?? -1,
+        lines: first.lines ?? -1,
         declaredWorld: w,
-        trace: paint?.trace ?? null,
-        missing: full === 0 && risky,
+        trace: first.trace ?? null,
+        missing: bare.length > 0,
+        missingAt: bare.map((s) => s.t),
+        /** 整片段读数（不给判据用，只给 `anim audit` 看）：交叠窗中点 / 窗后中点各一条 */
+        samples,
+        /** 窗后中点采到了"一片黑"（< 0.004，与逐段亮度守门同一个阈值）——**读数**，不 gate */
+        dark: verdict.blackTail,
+        /** true = 这一段声明了 `world: false`（"整帧底我自己负责"）⇒ 只给读数、不判铺底 */
+        selfBase,
+        error: first.error,
       });
     }
-    return { results, timeline: items.length };
+    return { results, selfBase: selfBaseRows, timeline: items.length };
+  },
+
+  /**
+   * **依赖令牌 `under` 的段级审计**（BACKLOG 头部 ② 的收口，2026-10-16）。
+   *
+   * 判据本身是纯函数，在 `src/timeline.js` 的 `auditUnderRequires()` 里（可离线单测：
+   * `tools/test-timeline-audit.mjs`）；这里只负责把**引擎手里那份已展开的时间线**喂给它 ——
+   * "交叠够不够"这件事只有在 `build()` 排完时间之后才是个事实
+   * （所以它不能像 `music` / `analyze` 那样在开浏览器之前用文本扫描判）。
+   */
+  underAudit() {
+    if (!engine) throw new Error('引擎未就绪');
+    return { results: auditUnderRequires(engine.timeline), timeline: engine.timeline.length };
+  },
+
+  /**
+   * **版面守门**（docs/LAYOUT.md）：**当前这一帧**画了几块字、哪块在主体区里。
+   *
+   * 为什么必须在这里做、而不是静态扫描源码：**"同一帧里画了几块"是运行期事实**。
+   * 钠那一期的问题（观众：「有些动画元素相互遮挡害得我搞不清楚到底要看哪个主体」）
+   * 正是"每一屏同时出现的东西太多"—— 场景里写了几处文字、它们什么时候同时出现，
+   * 源码文本一个都答不上来（可以跨函数、可以跟着旁白时刻出现、可以是循环里的 16 个编号）。
+   *
+   * 数据来源是**实际发生的绘制**：gl.paint.blocks（由 src/core/text.js 的 noteText 记下来，
+   * 只记画在**这一段自己的图层**上的字）。位置来自绘制参数，宽度在**这一段自己的**
+   * TextKit 实例上实测（不同实例的字体栈不同，宽度会差）。
+   *
+   * ⚠ 它**不渲染**：读的就是"上一次 frame(t) 留下的那一帧记账"。所以 check 里它跟在
+   *   逐段亮度采样后面白拿，不额外花一次渲染（246 秒的 sodium 有 12 段，这里省下的是几十秒）。
+   *   想要"按自己的采样点跑一遍"，就用 api.frame(t) 把 t 排好再逐点调用它。
+   *
+   * 判断逻辑一个字都不在这里 —— 全在纯函数 src/layout.js 的 layoutVerdict()
+   * （离线单测 tools/test-layout.mjs）。这里只负责"把记账读回来、组装成行"。
+   */
+  /**
+   * @param {{ id?: string }} [o] 只要某一段的记账（`check` 逐段读时用 —— **必须显式点名**：
+   *   时间线重叠时当前在播的段可能不止一个，而「某一段这一帧画了几块字」问的是那一段）。
+   */
+  layoutRows(o = {}) {
+    if (!engine) throw new Error('引擎未就绪');
+    const W = engine.gl.w, H = engine.gl.h;
+    const blocks = [];
+    const focusRects = [];
+    const ids = [];
+    // 这一帧的时刻：引擎渲染完会把 t 记在 lastT 上（check 是离屏渲染，clock 一直停在 0）。
+    const t = Number.isFinite(engine.lastT) ? engine.lastT : 0;
+    const list = o.id
+      ? engine.timeline.filter((i) => i.id === o.id)
+      : engine.timeline.filter((i) => (clock >= i.start && clock < i.end) || i._lastPaint);
+    for (const it of list) {
+      const paint = it._lastPaint ?? null;
+      if (!paint) continue;
+      ids.push(it.id);
+      const mine = (paint.blocks ?? []).map((b) => ({ ...b }));
+      // 宽度实测：必须在**这一段自己的** TextKit 上量（字体栈 / 字距缓存都在实例里）
+      const tk = it._layer?.typekit;
+      if (tk?.measure) {
+        for (const b of mine) {
+          try { b.w = tk.measure(b.sample, { size: b.size, weight: 400, family: 'sans' }); }
+          catch { /* 量不到就留 0：判据会退回中心点判定，不抛 */ }
+        }
+      }
+      blocks.push(...mine);
+      if (it.focus) focusRects.push(it.focus);
+    }
+    // 交叠期两段同时在画：焦点取第一段声明的那份（引擎的顺序 = 时间线顺序）
+    const verdict = layoutVerdict({
+      id: ids[0] ?? '', t: t, blocks, focus: focusRects[0] ?? null, W, H,
+      limits: layoutLimits(engine.style?.layout),
+    });
+    // 返回整份 verdict（**含真实的 t**）：CLI 直接把它 push 进采样数组。
+    // 曾返回过 { id, t: clock, verdict } —— CLI 那边照着旧字段名读，报告里全是 undefined。
+    return (ids.length ? ids : ['']).map((id) => ({ id, verdict }));
   },
 
   /** 调试：把引擎内部状态摊开（时间线、当前活跃段、后处理参数）。 */

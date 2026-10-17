@@ -1,6 +1,6 @@
 // P0-2 回归测试：**漏画共享背景的段必须被 check 抓住**。
 //
-// 背景（docs/IMPROVEMENTS.md P0-2）：做 fidus 时 9 个场景里 8 个漏了 `openFrame`，
+// 背景（docs/history/IMPROVEMENTS-1-3.md P0-2）：做 fidus 时 9 个场景里 8 个漏了 `openFrame`，
 // 那一段的底是纯黑（只有 grain 和暗角），**不报任何错**；check 的亮度判据是
 // `mean < 0.004`，而实测漏画时是 0.054（13 倍）——文字和颗粒自己就有亮度，
 // 足够把"黑底"顶到阈值之上。所以这一条以前完全抓不到。

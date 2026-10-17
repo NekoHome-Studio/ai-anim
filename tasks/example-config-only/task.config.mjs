@@ -1,7 +1,7 @@
 // 只写配置，就能出片 —— 配置档（B 档）示例：这个任务目录里**只有这一个文件**。
 //
 // 没有 scenes/、没有 audio/、没有一行 import：时间线里的每一项直接写**镜头模板**
-// （src/shots/ 的 8 个模板），由 src/timeline.js 的 build() 查表展开成段
+// （src/shots/ 的模板），由 src/timeline.js 的 build() 查表展开成段
 // （src/tasks.js 只要发现数组里有 { type } 节点就走 build()）。
 //
 // 规则（都在 src/timeline.js 里实现；写错会抛错，不会静默吃默认值）：
@@ -14,7 +14,7 @@
 //     所以 1 拍 = 0.5 秒（beatTime() 的兜底：beat × 60 / 120）。
 //
 // 看某个模板有哪些参数、默认值是多少（这条命令不渲染任何东西）：
-//   node scripts/anim.mjs shots            # 8 个模板各是什么
+//   node scripts/anim.mjs shots            # 11 个模板各是什么
 //   node scripts/anim.mjs shots chart      # 只这一个模板的全部参数与默认值
 //
 // 这支片子为什么没有音乐：这四段（title / chart / kinetic / outro）都不读音频，

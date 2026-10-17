@@ -23,7 +23,7 @@
  *
  * `text` 里含 `--fail` 那个子串时按 `--fail-cmd` 失败：
  *   · `always`（默认）—— 退出码 4（像 edge-tts 的网络抖动）；
- *   · `zeroremaining` —— **退出码 0，却把输出写成 0 字节**（`IMPROVEMENTS-4.md` §6 A 那件事，
+ *   · `zeroremaining` —— **退出码 0，却把输出写成 0 字节**（`docs/history/IMPROVEMENTS-4-5.md` §6 A 那件事，
  *     专门用来验"0 字节绝不当成功"）。
  * `--fail-n N` 时**前 N 次**失败、之后**总是成功** —— 用它验"失败也继续、最后统一补跑"
  * 那一步真的把句子救回来了。次数记在 `--fail-state`（默认 `<media>.stub-fails`）里，

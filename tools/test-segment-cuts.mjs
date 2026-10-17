@@ -1,6 +1,6 @@
 // 分块切点规划的单测（纯函数，不需要 GPU）。
 //
-// 验收（docs/IMPROVEMENTS.md P2-4）：`--segments N` 的块数应当 ≈ 时长 / N，
+// 验收（docs/history/IMPROVEMENTS-1-3.md P2-4）：`--segments N` 的块数应当 ≈ 时长 / N，
 // 且**每块都是完整的镜头**（切点落在段边界、且不在转场交叠里）。
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';

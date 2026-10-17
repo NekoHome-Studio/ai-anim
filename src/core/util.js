@@ -116,7 +116,7 @@ export const ease = {
  *
  * 为什么要有它：`prog(t, 0, 1, 'outCubicc')` 这种拼错以前会**静默退化成 linear**
  * （`ease[name] ?? ease.linear`），画面上只是"动起来有点平"—— 完全看不出是打错了字
- * （`docs/IMPROVEMENTS-2.md` P2-3）。
+ * （`docs/history/IMPROVEMENTS-1-3.md` P2-3）。
  * production 构建也保留这条警告：它只在写错时出现，代价可以忽略。
  */
 const warnedEase = new Set();
@@ -291,7 +291,7 @@ export function hexToLinear(hex) {
 /**
  * linear [r,g,b] -> 'rgb()' / 'rgba()' CSS 字符串（给 Canvas2D 用；Canvas2D 也在 sRGB 空间）。
  *
- * ⚠ **alpha 有两种写法，现在两种都对**（`docs/IMPROVEMENTS-4.md` §2）：
+ * ⚠ **alpha 有两种写法，现在两种都对**（`docs/history/IMPROVEMENTS-4-5.md` §2）：
  *   · `css(P.bone, 0.6)`         —— 第二个参数给 alpha（推荐，意图最清楚）；
  *   · `css(col(P, 'bone', a))`   —— 颜色本身是 **4 元组**时（`lines` 吃的那种），第 4 分量就是 alpha。
  *

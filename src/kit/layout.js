@@ -53,14 +53,14 @@ export function writeLine(type, str, x, y, opts = {}) {
  * 整行淡入的选项工厂。
  *
  * 以前这里必须塞一个 `stagger: 1e-4` 才能让 `alpha` 生效（引擎的老 bug：
- * `k` 只在 `stagger > 0` 时才随时间走）。那个 bug 已经修了（`docs/IMPROVEMENTS.md` P1-3），
+ * `k` 只在 `stagger > 0` 时才随时间走）。那个 bug 已经修了（`docs/history/IMPROVEMENTS-1-3.md` P1-3），
  * 所以现在就是干净的 `alpha: [0, to]`。
  *
  * ```js
  * type.write('标题', x, y, { ...fade(f.lt, 0.4), size: 96, color: css(P.bone) });
  * ```
  *
- * ⚠ **`alpha` 的两种写法语义不同**（`docs/IMPROVEMENTS-2.md` P0-1）：
+ * ⚠ **`alpha` 的两种写法语义不同**（`docs/history/IMPROVEMENTS-1-3.md` P0-1）：
  *   · `alpha: [a0, a1]`（数组，就是这个函数返回的）—— 随 t 从 a0 插值到 a1，**必须配 `t`**；
  *   · `alpha: 0.6`（数值）—— **常量**不透明度，与 t 无关。
  *   数值型 alpha 曾经被误当成"要动画"并取到 `k = 0`，于是整个字形**不画**（画面上一整块字消失）。

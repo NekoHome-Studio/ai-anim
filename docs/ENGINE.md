@@ -1180,7 +1180,7 @@ export default {
     镜头模板 "chart" 没有参数 "value"（大概是拼错了）。可用参数：id / values / title / sub / footer / peak
   ```
 
-  模板名写错时同一位置是 `未知的镜头模板 "quote"。可用的：title / chart / kinetic / whip / outro / wave / pulse / grid（看参数：node scripts/anim.mjs shots <名字>）`。
+  模板名写错时同一位置是 `未知的镜头模板 "quote2"。可用的：title / chart / kinetic / whip / outro / wave / pulse / grid / quote / counter / compare（看参数：node scripts/anim.mjs shots <名字>）`。
 - **混写禁令**：同一条时间线里**不能**同时出现「配置档节点」与「已经展开好的段」（手搓的、带 `start` / `end` 的
   无 `kind` 对象）—— 后者会被 `build()` 当成一个节点重新排、它的 `start`/`end` 被静默丢掉，
   所以 `build()` 直接抛「时间线里不能混写「配置档节点」和「已经展开好的段」」。
@@ -1617,10 +1617,10 @@ export default shot('chart', {
   唯一来源，所以"文档里写的默认值"与"代码实际用的默认值"不可能对不上。
 - **参数名写错会抛错**，不静默忽略：`shot('chart', { value: [...] })`（少个 `s`）会点名
   「没有参数 "value"」并列出可用参数；未知模板名抛 `未知的镜头模板 "xxx"`。
-- 查询方式：`node scripts/anim.mjs shots`（列全部 8 个）、`node scripts/anim.mjs shots chart`（某个模板的全部参数与默认值）；
+- 查询方式：`node scripts/anim.mjs shots`（列全部 11 个）、`node scripts/anim.mjs shots chart`（某个模板的全部参数与默认值）；
   **机器可读**的那一份是 `node scripts/anim.mjs shots --json`（字段契约见 §14.9）。
 
-### 14.2 8 个模板
+### 14.2 11 个模板
 
 | 名字 | 画什么 | 参数（默认值） |
 |---|---|---|
@@ -1632,6 +1632,9 @@ export default shot('chart', {
 | `wave` | 波形：以当前时刻为右端显示最近 `window` 秒的包络 + 每个 kick 一道横线 | `id` `label` `cols`（`240`）`window`（`1.2`） |
 | `pulse` | 同心圆：每次 kick 扩一圈 + 跟着低频呼吸的中心方块 | `id` `title` |
 | `grid` | 频谱网格：每列一个频段、逐格点亮 + 当前时刻扫描线 | `id` `label` `cols`（`32`）`rows`（`12`）`window`（`2.2`） |
+| `quote` | 引言：眉标逐字打出 + 一条生长的竖线 + 大段引文逐行上浮 + 出处署名（`align: 'center'` 是居中版） | `id` `label` `text`（两行示例引文）`cite` `role` `align`（`'left'`） |
+| `counter` | 计数：环形刻度盘 + 从正上方扫过的进度弧 + 从 `from` 滚到 `to` 的大数字（等宽、千分位、固定小数位） | `id` `from`（`0`）`to`（`96`）`decimals`（`0`）`unit` `label` `sub` `footer` |
+| `compare` | 对比：一行一个指标，上下两条水平条（A 灰 / B 信号色）+ 右侧一组 `A → B` 读数 | `id` `title` `sub` `aTitle` `bTitle` `rows`（4 项 `{ label, a, b }`）`footer` |
 
 `values` / `headline` 这类数组参数的**元素个数决定画面**（柱子数、两行大字），不是随便塞几个都行。
 
@@ -1654,7 +1657,7 @@ export default shot('chart', {
 
 ### 14.4 每个模板都自己铺满整帧（`whip` 是转场）
 
-- **8 个模板都自己画整帧背景**（`gl.clear(ctx.out, …)` 或自带的全屏 `Pass`），所以一个模板镜头就是**一段完整的画面**，
+- **11 个模板都自己画整帧背景**（`gl.clear(ctx.out, …)` 或自带的全屏 `Pass`），所以一个模板镜头就是**一段完整的画面**，
   不要在同一个 `cut` 里把两个模板叠起来。
 - `whip` 用 `ctx.under`（上一段的成帧）做甩镜，所以**必须**在时间线上给它交叠与转场声明：
 
@@ -1676,7 +1679,7 @@ export default shot('chart', {
 | 交付什么 | **画面本身**（柱子、字、背景、post 全在里面） | **骨架**：`handlesTransition`、共享背景、交叠期把上一帧甩走、`cameraPost(f.t, …)` |
 | 你写什么 | `shot('chart', { 参数 })` | `draw(ctx, { k, dx, dy, enter })` 里的前景代码 |
 | 背景 | 模板自己铺 | `makeShot` 铺（或 `cut(shot, { world: 'auto' })` 让引擎铺） |
-| 什么时候用 | 8 个常见镜头之一 | 要有新视觉，但又不想自己记那四件容易漏的事 |
+| 什么时候用 | 11 个常见镜头之一 | 要有新视觉，但又不想自己记那四件容易漏的事 |
 
 **不要指望把模板塞进 `makeShot().draw()`**：模板的 `render` 会自己 `gl.clear(ctx.out, …)` / 画全屏 Pass，
 覆盖掉 `makeShot` 铺的背景。要用模板就用模板，要自己画就用 `makeShot`，一段里二选一。
@@ -1739,7 +1742,7 @@ export default {
 （都来自 `listShots()`，§14.1）以固定字段名打出来：
 
 ```sh
-node scripts/anim.mjs shots --json          # 8 个模板
+node scripts/anim.mjs shots --json          # 11 个模板
 node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这个形状，count = 1）
 ```
 
@@ -1776,7 +1779,7 @@ node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这�
 | `shots[].summary` | string | 一句话摘要（人读表格里的那一列） |
 | `shots[].notes` | string | 长注释。**"需要音乐"这类依赖现在同时在 `requires` 里**（散文留着讲细节）：`wave`/`pulse`/`grid` 见 §14.3 |
 | `shots[].params[]` | array | 参数表，顺序 = 模板自己 `meta.params` 的顺序（不是默认值的键序） |
-| `params[].name` / `.type` / `.desc` | string | 参数名 / 类型（`string` `number` `number[]` `boolean` …）/ 说明。`type` 以模板的 `spec.params` 为准（没有 spec 时回落到 `meta.params[].type`） |
+| `params[].name` / `.type` / `.desc` | string | 参数名 / 类型（`string` `number` `number[]` `boolean` `object[]` …）/ 说明。`type` 以模板的 `spec.params` 为准（没有 spec 时回落到 `meta.params[].type`） |
 | `params[].default` | any \| null | 默认值（=「什么都不传时的画面」，取自工厂函数的 `.defaults`） |
 | `params[].required` | boolean | **没有默认值**（不传时模板拿到 `undefined`）。此时 `default` 恒为 `null` —— JSON 里没有 `undefined`，由 `required` 区分 |
 | `shots[].requires` | string[] | **1-21 新增**：依赖令牌（取值见 `requireTokens`）。`[]` = 明确声明"不需要外部输入" |
@@ -1784,10 +1787,10 @@ node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这�
 
 三条**读法**（与字段名一样是契约的一部分）：
 
-1. **`required: true` ⟺ 缺默认值**，不代表"画面离不开它"。当前 8 个模板的每一个参数都有默认值 ⇒
+1. **`required: true` ⟺ 缺默认值**，不代表"画面离不开它"。当前 11 个模板的每一个参数都有默认值 ⇒
    全是 `false`：省掉任何参数都不会报错，画面就是模板自带的那一段。
 2. **缺字段 ≠ `false` / 空**：`requires` 与 `outputs` 是 **1-21 补上的声明式 spec**
-   （`src/shots/*.js` 的 `xxxShot.spec`）—— 现在 8 个模板都有了。**没有 spec 的模板，这两个键
+   （`src/shots/*.js` 的 `xxxShot.spec`）—— 现在 11 个模板都有了。**没有 spec 的模板，这两个键
    根本不出现**，读到"没有这个键"要理解成**"还没声明过"**，不能当成"不需要"。
    1-21 只加字段、没改任何已有字段名 ⇒ `schema` 仍是 `anim.shots/1`，老的读者不会坏。
    （`required` 已经按同一条规矩设计：模板哪天去掉某个参数的默认值，它自动变成 `true`，
@@ -1795,8 +1798,15 @@ node scripts/anim.mjs shots chart --json    # 只给一个模板（同样是这�
 3. **`requires` 是"依赖"，不是"错误"**：消费它的是 `scripts/anim.mjs` 的 `cmdCheck`
    （判据 `shotDependencyIssues()` / 报告 `shotDependencyReport()`）：模板要 `'music'` 而任务
    **没配 `audio`** ⇒ 进 `errs`（这一段画面只能是黑的，退出码 1）；配了 `audio` 但还没跑
-   `analyze` ⇒ 进 `skipped`（"这一步还没跑"，默认不改退出码）。`'under'`（`whip` 要上一段的成帧）
-   **目前只是声明、还没接线** —— 交叠是时间线层的声明，静态文本扫描判不准，假报比不报更贵。
+   `analyze` ⇒ 进 `skipped`（"这一步还没跑"，默认不改退出码）。
+   `'under'`（`whip` 要上一段的成帧）走**另一条路**：交叠是时间线层的声明，任务源码的静态文本
+   扫描判不准（多行对象 / `seq()` / `--only` 之后的段表都不一样），所以它在**时间线展开之后**
+   由段级审计判 —— `shot()` 把 `spec.requires` 搬到场景对象上（`src/shots/index.js`），
+   `src/timeline.js` 的 `auditUnderRequires()` 读段对象给出三档事实，`check` / `anim audit`
+   打印：**没有交叠 ⇒ 硬问题**（`ctx.under` 恒为 null，画面几乎是黑的且不报错，进 `errs`）；
+   **第 1 段 / `--only` 之后 ⇒ 没有"上一段"可比，进 `skipped`**（不许说成"满足"）；
+   交叠了但没声明 `handlesTransition` ⇒ 引擎会再叠一次交叉溶解，报一行警告。
+   （2026-10-16 接线，BACKLOG 头部 ②；离线单测 `tools/test-timeline-audit.mjs`（19 项）。）
 
 - **确定性**：载荷只来自 `listShots()`，不含时间戳 / 随机 / 环境信息 ⇒ 同一份 `src/shots/`
   永远得到同一个字符串，可以直接 `diff`、可以当基线存。
@@ -1842,7 +1852,7 @@ seq([ cut(a, { dur: 4 }), cut(b, { dur: 3, overlap: 0.5 }), par(1.0, [cut(c, {du
 
 // 镜头库（A 档，§14）：一行一个整镜头；参数写错会抛错
 import { shot, SHOTS, listShots } from '../../src/shots/index.js';
-export default shot('chart', { values: [0.3, 0.7, 0.95], title: '成绩' });   // 8 个：title chart kinetic whip outro wave pulse grid
+export default shot('chart', { values: [0.3, 0.7, 0.95], title: '成绩' });   // 11 个：title chart kinetic whip outro wave pulse grid quote counter compare
 export default shot('wave', { id: 'intro' });                               // id 覆盖段名（wave/pulse/grid 需要音乐）
 
 // 配置档（B 档，§9.7 / §14.8）：时间线里直接写模板；任务可以没有 scenes/、整个文件没有任何 import

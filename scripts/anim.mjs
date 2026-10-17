@@ -11,9 +11,12 @@
  *   node scripts/anim.mjs styles                          列出风格包（task.config.mjs 里写 style: '名字'，
  *                                                         一行换掉整片观感；docs/STYLE.md）
  *   ── 只写配置出片（B 档）：timeline 里直接写 { type: 'title', … }，连 scenes/ 都不需要；
- *      节点字段、8 个模板、排错表见 docs/CONFIG-ONLY.md，可跑的完整示例见 tasks/example-config-only/
+ *      节点字段、11 个模板、排错表见 docs/CONFIG-ONLY.md，可跑的完整示例见 tasks/example-config-only/
  *   node scripts/anim.mjs still <task> -t 1.5,2,3 [-o dir] 出单帧 PNG（agent 用它看图）
  *   node scripts/anim.mjs sheet <task> --from 0 --to 10 -n 12  出接触表（一张图看一段）
+ *   node scripts/anim.mjs cuts <task> [--window 1.5] [--n 7]   切点两侧各 ±1.5s 出一张接触表
+ *                                                        （三点采样不落在切点上，切点要单独看；
+ *                                                         画方框的那一格就是切点 = 后一段第一帧）
  *   node scripts/anim.mjs video <task> [--from 1 --to 5]  逐帧渲染 + ffmpeg 出 mp4（收尾自动 ffprobe 复核）
  *   node scripts/anim.mjs shot  <task> --from 0 --to 4    出无音轨的短预览 mp4（快）
  *   node scripts/anim.mjs video <task> --dry-run          只测速 + 给耗时预估，不出片
@@ -88,7 +91,7 @@
  *   --scale 2                   2 倍分辨率输出（真 4K；1..4）
  *   --segments 10               分块渲染的目标块时长（秒）；切点只落在段边界、避开转场；
  *                               已渲好的块自动复用，但**渲染参数或源文件变了就全部重渲**
- *                               （指纹在 <任务>.parts/params.json，见 IMPROVEMENTS-2 P1-1）
+ *                               （指纹在 <任务>.parts/params.json，见 docs/history/IMPROVEMENTS-1-3.md P1-1）
  *   --parallel 3                切成 3 段**并行**渲染再自己拼（实测 2 进程 1.81×、3 进程 2.3×；
  *                               每个进程一个无头 Chrome，别超过物理核数。切点自动避开转场，
  *                               拼接走 MPEG-TS，不受 `-copyts` 那个坑影响）
@@ -126,6 +129,7 @@ import { WebSocketServer } from 'ws';
 import { chromium } from 'playwright-core';
 // 抖动统计（纯函数，无依赖）：`anim shake` 与 `video` 收尾的守门共用同一套判据
 import { analyzeShake, shakeSummary } from './lib/shake.mjs';
+import { layoutReport, layoutSummary } from '../src/layout.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /**
@@ -145,8 +149,13 @@ const FRAME_HEADER = 12;
  * 而成片路径一旦写坏就是整段白/黑（实测夹具：NaN 段 `check` 报 3,110,400 像素）。
  * 想让出片完全不受影响就 `--scan-nf 0`；想扫得更密就 `--scan-nf 1`（≈ +44% 帧时间，只适合短片段）。
  *
- * ⚠ 代价随**像素数**线性涨（4K = 4×，未实测）；极高帧率/极廉价场景下占比会更高，
- *   那时用 `--scan-nf 0` 关掉或加大 N。
+ * ⚠ 代价随**像素数**线性涨 —— **2026-10-16 实测了 4K**（BACKLOG 头部 ⑧；夹具
+ *   `tasks/_style-sampler`、`shot --from 0 --to 2 --samples 1`、120 帧、同一台机器）：
+ *     · 1080p：`--scan-nf 0` 12.1 fps（82.6 ms/帧）→ `--scan-nf 1` 8.3 fps（120.5 ms/帧）⇒ 一次 **+38ms**
+ *     · 4K（`--scale 2`）：3.6 fps（279 ms/帧）→ 2.3 fps（431 ms/帧）⇒ 一次 **+152ms**
+ *     · 比值 **4.0×**（与像素数 ×4 一致）。摊到默认档（每 30 帧一次）：4K **+5.1ms/帧 = +1.8%**
+ *   ⇒ 默认开着在 4K 下依然划算；`--scan-nf 1` 在 4K 是 **+55%**，只适合几秒的片段。
+ *   极高帧率/极廉价场景下占比会更高，那时用 `--scan-nf 0` 关掉或加大 N。全文见 `docs/PERF.md` §7.1。
  */
 const DEFAULT_SCAN_NF = 30;
 const argv = process.argv.slice(2);
@@ -805,7 +814,7 @@ function pickTask() {
 
 let session = null;
 /**
- * 会话开始时的源文件 mtime 快照（`docs/IMPROVEMENTS-4.md` §3）。
+ * 会话开始时的源文件 mtime 快照（`docs/history/IMPROVEMENTS-4-5.md` §3）。
  *
  * 为什么要它：渲染期写了仓库里的文件 → 私有 Vite 触发 HMR → 整页重载 → 页面里的引擎状态没了
  * → 下一次 `page.evaluate` 抛 `Cannot read properties of undefined (reading 'stats')`。
@@ -832,7 +841,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {{ task: string, scale?: number, only?: string, offline?: boolean }} o
  */
 async function openSession(o) {
-  // 先留一份源文件 mtime 基线：页面中途失联时用它点名"是谁在渲染期间写了文件"（IMPROVEMENTS-4 §3）
+  // 先留一份源文件 mtime 基线：页面中途失联时用它点名"是谁在渲染期间写了文件"（docs/history/IMPROVEMENTS-4-5.md §3）
   sessionWatch = sourceMtimes();
   // scale > 1 = 真 4K。曾经因为 LineBatch 在 SCALE>1 下不出图而被整体拒绝；
   // 根因已定位并修好（顶点着色器用物理分辨率换算裁剪空间，见 gl.js 的 LineBatch VS），
@@ -1101,7 +1110,7 @@ async function checkVideoFile(file, expect, opts = {}) {
 /* ------------------------------------------------------------------ 分块复用指纹 */
 
 /**
- * 分块的**渲染参数指纹**（`docs/IMPROVEMENTS-2.md` P1-1）。
+ * 分块的**渲染参数指纹**（`docs/history/IMPROVEMENTS-1-3.md` P1-1）。
  *
  * 为什么必须要有：`out/<任务>/<任务>.parts/` 里的分块只按时间区间命名，
  * 复用时不看任何参数。于是做了 x264 vs NVENC 对照实验时，第二次运行**秒完成**
@@ -1181,7 +1190,7 @@ function changedSources(before, after) {
 /**
  * 包一层 `page.evaluate`：页面失联时给一条**可读诊断**，并点名渲染期间被改过的源文件。
  *
- * 背景（`docs/IMPROVEMENTS-4.md` §3）：渲染期写文件 → Vite HMR 整页重载 → 页面里那个装着引擎
+ * 背景（`docs/history/IMPROVEMENTS-4-5.md` §3）：渲染期写文件 → Vite HMR 整页重载 → 页面里那个装着引擎
  * 状态的全局对象没了 → 下一次 `page.evaluate` 抛的是
  * `TypeError: Cannot read properties of undefined (reading 'stats')`。
  * 这句话指向"stats 读不到"，让人往"场景写出了 NaN / 段名写错"上查 —— 方向完全错。
@@ -1297,7 +1306,7 @@ function cmdNew() {
 // 连 scenes/ 都不需要：
 //   timeline: [ { type: 'title', title: '标题', sub: '副标题', dur: 4 },
 //               { type: 'chart', values: [0.3, 0.7, 0.95], title: '成绩', dur: 5 } ]
-// 8 个模板与它们的参数：node scripts/anim.mjs shots [名字]    ·    说明：docs/CONFIG-ONLY.md
+// 11 个模板与它们的参数：node scripts/anim.mjs shots [名字]    ·    说明：docs/CONFIG-ONLY.md
 import { seq, cut } from '../../src/timeline.js';
 import title from './scenes/title.js';
 import shapes from './scenes/shapes.js';
@@ -1641,12 +1650,18 @@ function shotDependencyIssues(usage, specOf, facts) {
 const SHOT_DEP_WHAT = '镜头模板依赖（spec.requires）';
 
 /**
- * **已经接线**（真的会去查）的依赖令牌。词表（`src/shots/index.js` 的 `SHOT_REQUIRES`）里
- * 其余的令牌（当前只有 `'under'`）目前**只是声明**：`check` 会把它打出来，并且明说"这一条没验"——
- * 「空 ≠ 干净」（1-19）在这里的形态就是：**不许把"没查"说成"都满足"**。
+ * **在"开浏览器之前"这一步就查得了**的依赖令牌（靠任务源码文本 + 任务事实）。
  *
- * 为什么不把"没接线的令牌"塞进 `skipped`：那是**引擎自己的**未完成项（对每个用 `whip` 的任务
- * 都一样、任务作者也改不了），塞进去会让 `--strict` 永远红、还会把真正的"这次没跑"淹掉。
+ * 词表（`src/shots/index.js` 的 `SHOT_REQUIRES`）里其余的令牌属于**时间线层**：
+ * 它们的真假只有在 `build()` 排完时间之后才成立，文本扫描判不准（假报比不报贵）。
+ *   · `'under'`（2026-10-16 起）—— 由**段级审计**查：`src/timeline.js` 的
+ *     `auditUnderRequires()` → 页面侧 `__anim.underAudit()` → `cmdCheck` 打印并 gate
+ *     （没有交叠 ⇒ errs；第 1 段 / `--only` 之后没得比 ⇒ 进 skipped）。
+ *     所以这里那句"还没接线"必须改成"不在这一步查"，否则报告会把**已经验过**的说成没验。
+ *
+ * 为什么不把"这一步查不了的令牌"塞进 `skipped`：那是**引擎自己的**分工（对每个用 `whip`
+ * 的任务都一样、任务作者也改不了），塞进去会让 `--strict` 永远红、还会把真正的"这次没跑"淹掉。
+ * 它该说的是"**换到下面那一段去查**"，而不是"没验"。
  */
 const SHOT_DEP_GATED = ['music', 'analyze'];
 
@@ -1727,11 +1742,25 @@ function shotDependencyReport(o = {}) {
   }
 
   if (ungated.length) {
-    lines.push({
-      sev: 'log',
-      text: `  ⚠ ${ungated.map((t) => `'${t}'`).join(' / ')} 这一条**还没接线**：这次没有验它`
-        + '（交叠是时间线层的声明，静态扫描判不准 —— 假报比不报更贵，见 docs/ENGINE.md §14.9 读法 3）',
-    });
+    // `under` 已经接线了，只是**不在这两步里**：它在时间线展开之后由段级审计判
+    // （见 `cmdCheck` 的「依赖 under」那一段）。说成"还没接线"会把验过的说成没验。
+    const late = ungated.filter((t) => t === 'under');
+    const never = ungated.filter((t) => t !== 'under');
+    if (late.length) {
+      lines.push({
+        sev: 'log',
+        text: `  · ${late.map((t) => `'${t}'`).join(' / ')} 是**时间线层**的依赖（交叠够不够），这一步判不准 —— `
+          + '它在时间线展开之后由段级审计查，见下面「依赖 under」那一段；'
+          + '那一段没出现就是**没验**，别当成满足（docs/ENGINE.md §14.9 读法 3）',
+      });
+    }
+    if (never.length) {
+      lines.push({
+        sev: 'log',
+        text: `  ⚠ ${never.map((t) => `'${t}'`).join(' / ')} 这一条**还没接线**：这次没有验它`
+          + '（交叠是时间线层的声明，静态扫描判不准 —— 假报比不报更贵，见 docs/ENGINE.md §14.9 读法 3）',
+      });
+    }
   }
   if (o.only) {
     lines.push({
@@ -1837,7 +1866,7 @@ function shotDependencyFacts(task) {
  *
  * **每段采三个点（15% / 50% / 85%）**，不是只采中点：入场头 1 秒恰恰是最容易出问题的地方
  * （文字没出来、位移方向不对、元素互相压字），而以前只看中点，那一段完全没被采到
- * （docs/IMPROVEMENTS.md P2-1）。
+ * （docs/history/IMPROVEMENTS-1-3.md P2-1）。
  *
  * 每个点渲两次：单子帧与多子帧（成片走的路径）。两条路径的亮度必须一致 ——
  * 运动模糊求平均出过错，而那个 bug 只存在于多子帧那条路。
@@ -1861,6 +1890,15 @@ async function cmdCheck() {
   const statics = scanScenes(task);
   for (const s of statics) warn(`⚠ ${s}`);
 
+  /**
+   * 静态检查阶段（开浏览器**之前**）攒下的错误 —— `errs` 要等 `openSession` 之后才构造
+   * （它读的是页面回传的 `info`），所以这一段先攒在这儿，下面 `const errs = [...staticErrs, ...]`。
+   * ⚠ 2026-10-16：复述率那一档最早直接写 `errs.push(...)`，而 `errs` 在它下几十行 ——
+   *   `--strict` 一跑就 `ReferenceError: errs is not defined`，还被 catch 吞成一句
+   *   "旁白复述检查没跑成"（假 skipped）。**先攒后并**，别在 try 里引用后面的 const。
+   */
+  const staticErrs = [];
+
   // 1.5) 静态：**画面文字逐字复述旁白**（`docs/CAPTIONS.md`）。
   //
   // 为什么放在 check 里：观众对 sodium 的反馈是"两条字幕同时出现（页面介绍 + 语音字幕）
@@ -1881,6 +1919,13 @@ async function cmdCheck() {
           warn('⚠ 画面文字在复述旁白 —— 同屏两套完整句子就是观众说的"两条字幕"：');
           for (const line of txt.split(/\r?\n/).slice(0, 12)) warn(`  ${line}`);
           warn('  → 画面只留标注（名词 / 数字 / 单位 / 出处），句子交给旁白与字幕；见 docs/CAPTIONS.md');
+          // 观众对 sodium 的反馈「不如纯看字幕了 / 不明所以」：43 句旁白里 12 句被逐字抄进了画面。
+          // 默认只 warn（已交付的片子必然命中，让 check 非零退出会把回归清单永久染红）；
+          // --strict 下进 errs —— 交付自检跑 --strict、回归清单跑默认，两边都照顾到。
+          if (strict) {
+            const hit = /(\d+)\s*句被逐字写进画面/.exec(txt);
+            staticErrs.push('[旁白复述] ' + (hit ? hit[1] + ' 句旁白被逐字写进画面' : '画面文字在复述旁白'));
+          }
         } else if (r.status === 2) {
           warn(`⚠ lint-narration-dup 没跑成：${String(txt).split(/\r?\n/)[0]}`);
           pushSkipped(skipped, '旁白复述检查（lint-narration-dup）', `它自己以退出码 2 退出（工具内部错误，不是"没命中"）：${String(txt).split(/\r?\n/)[0] || '(没有输出)'}`);
@@ -1948,24 +1993,53 @@ async function cmdCheck() {
     for (const it of info.timeline) {
       log(`  ${String(it.id).padEnd(16)} ${it.start.toFixed(2).padStart(8)} → ${it.end.toFixed(2).padStart(8)}  (${(it.end - it.start).toFixed(2)}s)${it.note ? '  ' + it.note : ''}`);
     }
-    const errs = [...depErrs, ...reportErrors(info)];
+    const errs = [...staticErrs, ...depErrs, ...reportErrors(info)];
+    // `--quick` 的判据要在这之前就知道（响度那一档、试渲染那一档都用它）。
+    // ⚠ 它只是**冒烟**：每段只采 50% 一个点、只跑单子帧、响度只量前 60 秒 ——
+    //   不看多子帧路径、不看入场头 1 秒。结论行里会写清"哪些没跑"。
+    const quick = flag('quick');
     // 音轨：说清"节拍是从哪条轨测的"（P1-4 —— 从混音里测会被旁白带偏）
     const tracks = resolveAudioTracks(task);
     if (tracks.analysisSource) log(`音频：${tracks.note}`);
+
+    // 「音频分析」这一项**跑没跑**必须说出来（BACKLOG 头部 ④，2026-10-16）。
+    //
+    // 以前只有 `analyzeTaskAudio()` 在缺 ffmpeg 时 warn 一句然后返回 null —— 而那一步**只有
+    // 出片路径（cmdVideo）会走**：`check` 不跑 analyze，于是"这支片子的画面压根踩不了拍子"
+    // 在体检里一个字都不会提（除非用了声明 `requires: ['analyze']` 的模板）。
+    // 现在这里明说，并且进 `skipped`（"没跑 ≠ 通过"）；`--strict` 会把它当失败。
+    if (tracks.analysisSource) {
+      const abase = tracks.analysisSource.replace(/\.[^.]+$/, '');
+      const apath = path.join(ROOT, 'tasks', task, 'audio', path.basename(abase) + '.analysis.json');
+      if (!existsSync(apath) && !(await checkFfmpeg())) {
+        warn('⚠ 音频分析：还没有预计算的分析数据（' + path.relative(ROOT, apath) + ' 不存在），');
+        warn('  而这台机器上**没有 ffmpeg** ⇒ 这一步连补都补不了：画面不会踩拍子（f.beat / f.a 全是 0）。');
+        warn('  → 装 ffmpeg（或用 ANIM_FFMPEG 指定），再跑 node scripts/anim.mjs analyze ' + task);
+        pushSkipped(skipped, '音频分析（analyze）', '没有 ffmpeg：这一步连补都补不了 —— 没验');
+      }
+    }
 
     // 音频的数字守门（1-20）：你听不见，就报数字。放在这里是因为它 spawnSync 会阻塞事件循环，
     // 绝不能夹在渲染会话中间（渲染靠 stdin 控制通道）。
     if (tracks.packaging) {
       const { measureLoudness, formatLoudness, assessLoudness } = await import('./lib/media.mjs');
       const t0 = Date.now();
+      // `--quick` 用省时档：只量前 60 秒（BACKLOG 头部 ⑤ —— 4 分钟的轨整条量要 12–14s，
+      // 而快捷冒烟只是想看数字有没有离谱）。**必须写在输出里**：整合响度是整段的量，
+      // 截断读数不是一个可以当结论用的数字。
+      const win = quick ? 60 : null;
       try {
-        const m = measureLoudness(tracks.packaging);
+        const m = measureLoudness(tracks.packaging, win ? { seconds: win } : undefined);
         const a = assessLoudness(m);
         log(`响度：${formatLoudness(m)}（packaging = ${path.basename(tracks.packaging)}，真峰=true peak）`
           + `  ${a.tier === 'ok' ? '✓' : a.tier === 'warn' ? '⚠' : '✗'} ${a.verdict}`);
+        if (m.seconds) {
+          warn(`  ⚠ 这个读数**只量了前 ${m.seconds}s**（--quick 的省时档）—— 整合响度是整段的量，`
+            + '别拿它当全片结论；要结论就去掉 --quick。');
+        }
         if (a.tier === 'error') warn(`  → 靶子是 ${m.target.i} LUFS / ${m.target.tp} dBTP（主流平台归一化目标）。`
           + `这一条只报数字、不自动归一化 —— 归一化会改动所有带旁白片子的音轨，等于已交付片子全部重出。`);
-        log(`  （量了 ${((Date.now() - t0) / 1000).toFixed(1)}s；4 分钟的轨约 12s）`);
+        log(`  （量了 ${((Date.now() - t0) / 1000).toFixed(1)}s；4 分钟的轨约 12s${win ? '，这里只量了前 60s' : ''}）`);
       } catch (e) {
         warn(`⚠ 响度没量成（${e.kind}）：${String(e.message).split('\n')[0]}`);
       }
@@ -2020,7 +2094,30 @@ async function cmdCheck() {
     let world = null;
     try {
       world = await evaluateSafe(() => /** @type {any} */ (window).__anim.worldAudit(), undefined, 'worldAudit()');
-      const risky = (world?.results ?? []).filter((r) => r.handlesTransition || r.declaredWorld !== 'none');
+      // ⚠ 口径：`world: false` 的段在下面单独一栏（`selfRows`），但它们**也是**"声明了转场"的段 ——
+      //   统计"多少段声明了转场/共享背景"要把两栏合起来看，否则 whip 会被算成 0（2026-10-16 实测）。
+      const risky = [...(world?.results ?? [])].filter((r) => r.handlesTransition || r.declaredWorld !== 'none');
+      // 声明了 `world: false`（"整帧底我自己负责"）的段：**不判铺底**，但这次真的采了读数
+      // （BACKLOG 头部 ⑦）。以前它们一行都不出现，于是"交叠窗之后那 1 秒"连个数字都没有。
+      const selfRows = world?.selfBase ?? [];
+      if (selfRows.length) {
+        const darkSelf = selfRows.filter((r) => r.dark && (r.handlesTransition || r.declaredWorld !== 'none'));
+        log(`\n背景守门（world: false 的段，**不判铺底**，只给读数）：${selfRows.length} 段`);
+        for (const r of selfRows) {
+          const means = (r.samples ?? []).filter((s) => typeof s.mean === 'number')
+            .map((s) => `t=${s.t.toFixed(2)}s 亮度 ${s.mean.toFixed(3)}`).join('  ·  ');
+          log(`  ${String(r.id).padEnd(14)} 整帧覆盖 ${String(r.full).padStart(3)} 次  ${means}`);
+        }
+        if (darkSelf.length) {
+          // ⚠ 只 warn、不进 errs（2026-10-16 实测）：窗后中点**不是判据点** —— 转场模板在窗后
+          //   走"没有 under"的分支，本来就可能是近黑的（whip 设计值 0.037–0.051）。这里只是把
+          //   "真的低到 0.004 以下"（= 除了一层清屏色什么都没有）这件事**报出来**给人看；
+          //   逐段亮度守门（15%/50%/85% 三点）才是那条 gate。
+          warn(`⚠ 其中有 ${darkSelf.length} 段是**转场段**，窗后中点采到了"一片黑"（mean < 0.004）：${darkSelf.map((r) => r.id).join(', ')}`);
+          warn('  → 这是**读数**不是判据：声明 world: false 是"底我自己负责"，不是"这段没人看着"。');
+          warn('    甩镜尾巴的近黑（0.037–0.051）是模板设计；真的低到 0.004 以下才值得去看那一帧。');
+        }
+      }
       if (world?.results?.length) {
         const missing = world.results.filter((r) => r.missing);
         if (missing.length) {
@@ -2034,7 +2131,12 @@ async function cmdCheck() {
           warn(`                ③ 确实是刻意不铺底 → 明确写 cut(shot, { world: false })。`);
           errs.push(`[背景守门] 没铺背景的段：${missing.map((m) => m.id).join(', ')}`);
         } else {
-          log(`\n背景守门：${world.results.length} 个交叠段都铺满了整帧背景（其中 ${risky.length} 段声明了转场/共享背景）`);
+          const riskyAll = [...risky, ...selfRows.filter((r) => r.handlesTransition || r.declaredWorld !== 'none')];
+          log(`\n背景守门：${world.results.length} 个交叠段在**交叠窗中点**都铺满了整帧背景（窗后中点只做读数，不判）`
+            + `（其中 ${riskyAll.length} 段声明了转场/共享背景）`
+            + (selfRows.length
+              ? `；另有 ${selfRows.length} 段声明了 world: false（不判铺底，读数见上）`
+              : ''));
         }
       } else {
         // 「空 ≠ 干净」：审计跑通了、但一个交叠段都没被翻出来 —— 也就是**零条断言**。
@@ -2050,14 +2152,77 @@ async function cmdCheck() {
       pushSkipped(skipped, '背景守门（worldAudit）', firstLine(err));
     }
 
+    // 依赖令牌 `under` 的**段级审计**（BACKLOG 头部 ② 的收口，2026-10-16）。
+    //
+    // 为什么必须在这里、而不是像 `music`/`analyze` 那样在开浏览器之前用文本扫描判：
+    // `whip` 这类模板的画面来自"把上一段的成帧（ctx.under）甩走"，而引擎**只在两段交叠的
+    // 那一小段**里给得出 ctx.under（engine.js：`under: k > 0 ? under : null`；交叠窗之外
+    // 这一段就是 items[0]，没有"上一段"）。于是"交叠够不够"只在 build() 排完时间之后
+    // 才是个事实 —— 源码文本里看不出来（对象可以跨行、可以 seq() 拼、--only 之后段表还会变）。
+    //
+    // 判据是纯函数 `src/timeline.js` 的 `auditUnderRequires()`（离线单测
+    // `tools/test-timeline-audit.mjs`）：missing = 硬问题（画面几乎是黑的且不报错）⇒ errs；
+    // noPrev = **没判**（--only 之后必然出现）⇒ 进 skipped，绝不说成"都满足"。
+    try {
+      const ua = await evaluateSafe(() => /** @type {any} */ (window).__anim.underAudit(), undefined, 'underAudit()');
+      const rows = ua?.results ?? [];
+      const missing = rows.filter((x) => x.missing);
+      const dbl = rows.filter((x) => x.doubleTransition);
+      const noPrev = rows.filter((x) => x.noPrev);
+      const judged = rows.filter((x) => !x.noPrev);
+      if (!rows.length) {
+        log(`\n依赖 under：这次**没有可查的对象**（时间线 ${ua?.timeline ?? '?'} 段里没有哪一段声明要读 ctx.under）`
+          + '—— 不是"依赖都对"');
+      } else {
+        // 只在"上面已经打过别的行"时才不补空行 —— 否则标题会粘在上一段输出尾巴上
+        const pad = (missing.length || judged.length) ? '' : '\n';
+        if (missing.length) {
+          warn(`\n⚠ 依赖 under：${missing.length}/${rows.length} 段声明要读 ctx.under，却**与上一段没有交叠**`);
+          for (const m of missing) {
+            warn(`  [${m.id}] 第 ${m.index + 1} 段 ${m.start.toFixed(2)} → ${m.end.toFixed(2)}s：与上一段没有 overlap`);
+          }
+          warn('  → ctx.under 只在两段交叠的那一小段里有值，没有交叠时模板退回"没有 under"那条分支 ——');
+          warn('    画面几乎是黑的、**而且一个字都不报**（这正是 BACKLOG 1-21 记的"只声明、没接线"）。');
+          warn('    改法：给这一段写 overlap（{ type: \'whip\', dur, overlap: 0.5 } 或 cut(whip, { overlap: 0.5 })），');
+          warn('          或者把它换成一个自己铺底的模板。');
+          errs.push(`[under] 声明要读 ctx.under 却没有交叠的段：${missing.map((m) => m.id).join(', ')}`);
+        } else if (judged.length) {
+          log(`\n依赖 under：${judged.length}/${rows.length} 段声明要读 ctx.under，都真的与上一段交叠了`);
+        }
+        if (noPrev.length) {
+          const ids = noPrev.map((m) => m.id).join(', ');
+          warn(`${pad}⚠ 依赖 under：${noPrev.length} 段**没判**（它在展开后的时间线里是第 1 段，没有"上一段"可比）：${ids}`);
+          warn('  → 这不是通过：--only 会把选中的段平移到时间轴开头，所以只挑一段试渲染时必然出现这一行。');
+          pushSkipped(skipped, '依赖 under（段级审计）',
+            `${noPrev.length} 段没有上一段可比（第 1 段 / --only 之后）：${ids} —— 没验`);
+        }
+        if (dbl.length) {
+          warn(`⚠ 依赖 under：${dbl.length} 段读了 ctx.under，却没声明 handlesTransition（${dbl.map((m) => m.id).join(', ')}）`);
+          warn('  → 引擎会在这上面**再叠一次交叉溶解**（engine.js: k > 0 && !scene.handlesTransition），');
+          warn('    "甩走"会被稀释成两屏叠一起。改法：场景/时间线上写 handlesTransition: true。');
+        }
+      }
+    } catch (err) {
+      if (err && err.readable) throw err;      // 页面失联：照实抛出
+      log(`\n（依赖 under 的段级审计不可用：${firstLine(err)}）`);
+      pushSkipped(skipped, '依赖 under（段级审计）', firstLine(err));
+    }
+
+    /** 采样点 -> 这一帧的版面判定（按段聚合；`check` 汇总时只用它，不额外渲染） */
+    const layoutSeen = new Map();
+    /** 有几个采样点的记账没读成（读不成 = 那些点没验，收尾进 skipped） */
+    let layoutSkipped = 0;
+    /** 汇总那一段跑没跑（跑挂了就别再跑，免得刷两遍错） */
+    let layoutErrs = false;
+
     const t0 = Date.now();
     const statsAt = (t, opts) => evaluateSafe(
       ([tt, oo]) => /** @type {any} */ (window).__anim.stats(tt, oo), [t, opts],
       `stats(t=${t.toFixed(2)}s)`,
     );
-    // --quick：每段只在 50% 采一个点、只跑单子帧。用于**快速冒烟**（改完引擎先扫一遍
-    // 「有没有哪一段直接抛异常」），不替代完整 check —— 它不看多子帧路径、也不看入场头 1 秒。
-    const quick = flag('quick');
+    // --quick：每段只在 50% 采一个点、只跑单子帧（`quick` 在上面已经取过了 ——
+    // 响度那一档也要用它）。用于**快速冒烟**（改完引擎先扫一遍「有没有哪一段直接抛异常」），
+    // 不替代完整 check —— 它不看多子帧路径、也不看入场头 1 秒。
     log(quick
       ? '\n--quick：每段只采 50% 一个点、只跑单子帧（冒烟用；完整体检请去掉 --quick）'
       : '\n每段：15% / 50% / 85% 三个点，各测单子帧与多子帧（成片走的路径）');
@@ -2089,6 +2254,24 @@ async function cmdCheck() {
         const one = await statsAt(t, { samples: 1 });
         points++;
         rows.push({ t, one, multi, used });
+
+        // 版面守门（docs/LAYOUT.md）：**白拿**这一帧的记账 —— layoutRows() 不渲染，
+        // 读的就是上面 statsAt / multi 那两次渲染留下的 gl.paint.blocks。
+        // 必须**点名段**：交叠期同时画着两段，而问题问的是「这一段这一帧画了几块字」。
+        try {
+          const lr = await session.page.evaluate(
+            (id) => /** @type {any} */ (window).__anim.layoutRows({ id }), it.id,
+          );
+          for (const row of lr ?? []) {
+            if (!row || !row.id) continue;
+            const list = layoutSeen.get(row.id) ?? [];
+            list.push({ t: row.verdict?.t ?? 0, verdict: row.verdict });
+            layoutSeen.set(row.id, list);
+          }
+        } catch (err) {
+          if (err && err.readable) throw err;      // 页面失联：照实抛出
+          layoutSkipped++;
+        }
 
         const tag = `${it.id.padEnd(14)} t=${t.toFixed(2)}s`;
         const parts = [`  ${tag}  单帧 ${one.mean.toFixed(3)}`];
@@ -2164,6 +2347,78 @@ async function cmdCheck() {
     log(`\n试渲染 ${info.timeline.length} 段 × ${quick ? 1 : 3} 个点 × ${quick ? 1 : 2} 条路径（共 ${points * (quick ? 1 : 2)} 帧）用了 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
     /**
+     * **版面守门**（`docs/LAYOUT.md`，2026-10-16）：钠那期三条外部批评里的两条 ——
+     * 「元素互相遮挡害得我搞不清楚到底要看哪个主体」「不如纯看字幕了」—— 都发生在**信息设计**
+     * 这一层，而引擎当时对此**一条判据都没有**（`check` 只管亮度 / 背景 / 非有限值 / 依赖令牌）。
+     *
+     * 判据（都在纯函数 `src/layout.js` 里，离线单测 `tools/test-layout.mjs`）：
+     *   ① **每屏几块字**：把挨得近的文字合成「块」（26px 一道的读数面板算一块）再数，超过上限就报；
+     *   ② **主体之外还有几个「看的地方」**（「不知道看哪个主体」的直接读数）；
+     *   ③ 声明了 `focus` 的段另加一条「主体区里压着几块」。
+     *
+     * 退出码：**默认只 warn**（「先只报不改退出码」，同 1-19 的 skipped 与 lint-narration-dup），
+     * `--strict` 才进 errs —— 现在每个任务都必然超限（这套阈值是一条新纪律），
+     * 让 check 默认非零退出会把回归清单永久染红，反而没人看了。
+     */
+    if (!layoutErrs) {
+      try {
+        const rows = layoutReport([...layoutSeen.entries()].map(([id, samples]) => ({ id, samples })));
+        const summary = layoutSummary(rows);
+        const limits = info.layoutLimits ?? {};
+        if (!rows.length) {
+          warn('\n⚠ 版面守门这次**一条都没验**：一个采样点都没拿到绘制记账。');
+          pushSkipped(skipped, '版面守门（layoutAudit）', '时间线里没有段可采样 —— 不能算通过');
+        } else {
+          log(`\n版面守门：${summary.judged}/${summary.segments} 段采到了文字绘制 · 最挤的一帧 ${summary.peak} 块`
+            + `（上限 ${limits.maxBlocks ?? '?'}；主体之外 ≤ ${limits.maxOffSubject ?? '?'}）`
+            + `${quick ? '（--quick：每段只采 50% 一个点）' : ''}`);
+          for (const r of rows) {
+            const w = r.worst;
+            if (!w) { warn(`  ${String(r.id).padEnd(14)} 没采到（渲染失败或这一段没有文字）`); continue; }
+            const mark = r.violations.length ? '⚠' : ' ';
+            const extra = r.violations.length
+              ? `  ← ${r.violations.map((v) => v.detail).join('；')}（${r.over}/${r.samples} 个采样点超限）`
+              : '';
+            log(`  ${mark} ${String(r.id).padEnd(14)} t=${w.t.toFixed(2)}s  ${w.blocks} 块（${w.draws} 次文字绘制）`
+              + `  主体区 ${w.focus ? `${w.inFocus} 块` : '未声明'}${extra}`);
+          }
+          if (summary.violates.length) {
+            warn(`\n⚠ 版面守门：${summary.violates.length}/${summary.judged} 段**一屏的东西太多**`);
+            warn('  观众对钠那期的原话：「有些动画元素相互遮挡害得我搞不清楚到底要看哪个主体」。');
+            warn('  → 改法（都不需要动引擎）：① 读数**一次只揭一个**（同屏别一次亮 6 个数）；');
+            warn('    ② 画面文字只放**标注**（名词 / 数字 / 出处），句子交给旁白与字幕；');
+            warn('    ③ 场景里声明 focus（或时间线上写 focus: { x, y, w, h } / focus: center）——');
+            warn('      声明之后「主体区里压了几块 / 主体之外还有几个看的地方」才有判据（见 docs/LAYOUT.md）。');
+            if (strict) {
+              for (const r of summary.violates) {
+                errs.push(`[版面守门] ${r.id}：${r.violations.map((v) => v.detail).join('；')}`);
+              }
+            }
+          }
+          if (summary.noFocus.length) {
+            warn(`\n⚠ 版面守门：${summary.noFocus.length} 段**没有主体声明** ——「这一段看哪里」没判`
+              + '（数量判据跑了，但「主体区里压了几块 / 主体之外还有几个看的地方」这两条**没跑**）。');
+            warn(`  段：${summary.noFocus.join(', ')}`);
+            pushSkipped(skipped, '版面守门·主体声明（focus）',
+              `${summary.noFocus.length} 段声明不了主体（场景读不到 focus）：${summary.noFocus.join(', ')} —— 约束没验`);
+          }
+          if (summary.unjudged.length) {
+            pushSkipped(skipped, '版面守门（layoutAudit）',
+              `${summary.unjudged.length} 段一次采样都没拿到：${summary.unjudged.join(', ')} —— 没验`);
+          }
+        }
+      } catch (err) {
+        layoutErrs = true;
+        log(`\n（版面守门汇总失败：${firstLine(err)}）`);
+        pushSkipped(skipped, '版面守门（layoutAudit）', firstLine(err));
+      }
+    }
+    if (layoutSkipped) {
+      pushSkipped(skipped, '版面守门（采样）', `${layoutSkipped} 个采样点的记账没读成 —— 那些点没验`);
+    }
+
+
+    /**
      * P0-3：**场景抛异常必须是硬失败**。
      *
      * 这条以前完全缺失，而它正是 beast 那轮最贵的一口：`check` 只读一次 `info`
@@ -2191,7 +2446,14 @@ async function cmdCheck() {
         const dur = it.end - it.start;
         for (const k of [0.15, 0.5, 0.85]) all.push(it.start + dur * k);
       }
-      const sheetPath = path.resolve(ROOT, opt('sheet', path.join('out', task, 'check', 'contact.png')));
+      // ⚠ `--sheet` 可以**不带值**：`opt('sheet', …)` 在「选项存在但后面没跟值」时返回 undefined
+      //   （opt 取的是 `rest[i + 1]`），直接喂 path.resolve 会 `ERR_INVALID_ARG_TYPE`。
+      //   2026-10-16 跑 `check _shots-lab --quick --sheet` 撞到的**既有 bug**（AGENTS.md 里
+      //   那条 `check <task> [--sheet]` 一直是这样写的，只是没人跑过带 flag 的那条路）。
+      //   另一个坑：`--sheet --quick` 时 opt 会把下一个 flag 当成值 ⇒ 用 startsWith('-') 挡掉。
+      const sheetArg = opt('sheet', '');
+      const sheetPath = path.resolve(ROOT, sheetArg && !String(sheetArg).startsWith('-') ? sheetArg
+        : path.join('out', task, 'check', 'contact.png'));
       await writeContactSheet(all, sheetPath);
       log(`✓ 接触表 ${path.relative(ROOT, sheetPath)}（${all.length} 格，每段 15%/50%/85%）`);
     }
@@ -2217,6 +2479,18 @@ async function cmdCheck() {
       process.exitCode = 1;
     }
     if (errs.length) {
+      /**
+       * 逐条打印**为什么红**。
+       *
+       * 以前这里只打一行"✗ 有 N 个问题" —— 每条错误各自的 warn 早就打过了
+       * （背景守门 / under / 亮度 / 非有限值），但 `--strict` 新接入的两类**只在 errs 里、
+       * 不在上面任何一行**（`[旁白复述]` 与 `[版面守门]`），于是"退出码 1 + 只给个数字"。
+       * 这与 `reportErrors()` 的既有做法一致（那里也是把 errs 逐条打出来）。
+       * 上限 12 条：再多也没人读，后面还有结论行。
+       */
+      warn(`\n✗ 为什么红（${errs.length} 条）：`);
+      for (const e of errs.slice(0, 12)) warn(`  · ${e}`);
+      if (errs.length > 12) warn(`  · …另有 ${errs.length - 12} 条`);
       warn(`\n${checkVerdictLine({ problems: errs.length, skipped: skipped.length })}`);
       process.exitCode = 1;
     } else {
@@ -2231,11 +2505,20 @@ async function cmdCheck() {
   } finally { await closeSession(); }
 }
 
-/** 把若干时刻渲染成一张接触表（每格标时刻），写到 out/。 */
-async function writeContactSheet(times, out) {
-  const cols = Math.max(1, Number(opt('cols', '4')));
-  const cell = Number(opt('cell', '420'));
-  const dataUrl = await session.page.evaluate(async ({ times, cols, cell }) => {
+/** 把若干时刻渲染成一张接触表（每格标时刻），写到 out/。
+ *
+ * `check --sheet` 与 `anim cuts` 共用这一份实现。可选项都是**向后兼容**的加法：
+ *   · `samples` / `shutter`：不传就与从前逐像素一样（`samples: 1`）；
+ *   · `marks`：要高亮的时刻数组（±0.02s 内算命中），命中格描一圈信号色方框 ——
+ *     `anim cuts` 用它指出「这一格就是切点」。
+ */
+async function writeContactSheet(times, out, opts = {}) {
+  const cols = Math.max(1, Number(opts.cols ?? opt('cols', '4')));
+  const cell = Number(opts.cell ?? opt('cell', '420'));
+  const samples = opts.samples ?? 1;
+  const shutter = opts.shutter ?? 0.5;
+  const marks = Array.isArray(opts.marks) ? opts.marks : null;
+  const dataUrl = await session.page.evaluate(async ({ times, cols, cell, samples, shutter, marks }) => {
     const api = /** @type {any} */ (window).__anim;
     const w = cell, h = Math.round((cell * 9) / 16);
     const pad = 6, lab = 20;
@@ -2247,7 +2530,7 @@ async function writeContactSheet(times, out) {
     c.fillStyle = '#1a1a1c'; c.fillRect(0, 0, cv.width, cv.height);
     const img = new Image();
     for (let i = 0; i < times.length; i++) {
-      await api.frame(times[i], { samples: 1 });
+      await api.frame(times[i], { samples: Number(samples), shutter });
       img.src = api.png();
       await img.decode();
       const x = pad + (i % cols) * (w + pad);
@@ -2255,9 +2538,13 @@ async function writeContactSheet(times, out) {
       c.drawImage(img, x, y + lab, w, h);
       c.fillStyle = '#ddd'; c.font = '14px monospace';
       c.fillText(`${times[i].toFixed(2)}s`, x + 2, y + 15);
+      if (marks && marks.some((m) => Math.abs(m - times[i]) < 0.02)) {
+        c.strokeStyle = '#ff4d12'; c.lineWidth = 3;
+        c.strokeRect(x + 2, y + lab + 2, w - 4, h - 4);
+      }
     }
     return cv.toDataURL('image/png');
-  }, { times, cols, cell });
+  }, { times, cols, cell, samples, shutter, marks });
   mkdirSync(path.dirname(out), { recursive: true });
   writeFileSync(out, Buffer.from(String(dataUrl).split(',')[1], 'base64'));
 }
@@ -2371,6 +2658,83 @@ async function cmdSheet() {
     writeFileSync(out, Buffer.from(String(dataUrl).split(',')[1], 'base64'));
     log(`✓ ${path.relative(ROOT, out)}`);
     reportErrors(session.info);
+  } finally { await closeSession(); }
+}
+
+/* ------------------------------------------------------------------ 命令：cuts */
+
+/**
+ * 切点接触表：**切点两侧固定出图**（BACKLOG 1-26）。
+ *
+ * 为什么要有它：`check` 的三点采样是每段的 15% / 50% / 85% —— **一个都不落在切点上**，
+ * 而观众说"跳"的时刻恰恰全在切点。以前想知道切点长什么样，得自己从段起止时间里挑一个数、
+ * 手写 `still -t … --only …`（还得先知道那一刻属于哪一段）。现在一条命令把每个切点两侧摊开。
+ *
+ *   node scripts/anim.mjs cuts <任务>                     # 每个内部段边界各出一张接触表
+ *   node scripts/anim.mjs cuts <任务> --window 1.5 --n 7  # 每侧 1.5 秒共 7 格（默认）
+ *   node scripts/anim.mjs cuts <任务> --at 12.5,30        # 只出这两个时刻（复现 check 报的切点）
+ *   node scripts/anim.mjs cuts <任务> --samples auto      # 带运动模糊（默认 1：先看清画面）
+ *
+ * ⚠ 画着信号色方框的那一格**就是切点**，它画的是**后一段的第一帧** —— 引擎判"这一段在不在播"
+ *   用的是 `t >= start && t < end`，所以切点那一刻已经归后一段了；它左边那一格才是前一段的最后一帧。
+ *   转场交叠期里两侧都在播，那几格的底是两段叠出来的（这正是要看的东西）。
+ */
+async function cmdCuts() {
+  const task = pickTask();
+  const win = Math.max(0.1, Number(opt('window', '1.5')));
+  const n = Math.max(3, Number(opt('n', '7')));
+  const samples = opt('samples', '1');
+  const shutter = Number(opt('shutter', '0.5'));
+  const outDir = path.resolve(ROOT, opt('out', opt('o', path.join('out', task, 'cuts'))));
+  const atArg = opt('at', '');
+
+  await openSession({ task, scale: Number(opt('scale', '0')) || undefined });
+  try {
+    const info = session.info;
+    const timeline = info.timeline ?? [];
+    if (!timeline.length) die('这条时间线是空的 —— 没有切点可看。');
+
+    let cuts;
+    if (atArg) {
+      cuts = atArg.split(',').map(Number).filter(Number.isFinite);
+      if (!cuts.length) die('--at 需要给时刻（秒），例如 --at 12.5,30');
+    } else {
+      // 内部段边界 = 每段的 start（0 是整片开头，不算切点）
+      cuts = timeline.map((it) => it.start).filter((t) => t > 0.001);
+    }
+    cuts = [...new Set(cuts.map((t) => Math.round(t * 1000) / 1000))].sort((a, b) => a - b);
+    if (!cuts.length) { log('这条时间线只有一个镜头（没有内部切点）。'); return; }
+
+    const step = (win * 2) / (n - 1);
+    mkdirSync(outDir, { recursive: true });
+    log('切点 ' + cuts.length + ' 个：每个两侧 ±' + win + 's、' + n + ' 格'
+      + '（步长 ' + step.toFixed(3) + 's，samples=' + samples + '）');
+    log('输出目录 ' + path.relative(ROOT, outDir) + '\n');
+
+    for (const c of cuts) {
+      // 切点前一刻**在播**的段（交叠期可能不止一个）→ 这一刻**开始**的段。
+      // ⚠ 别把 after 写成「c 时刻在播的段」：交叠期旧段还没结束，那样会把两段都列进去、
+      //   读起来像「这一刻开始了两个镜头」（2026-10-16 出图时改的）。
+      const before = timeline.filter((it) => c - 0.001 >= it.start && c - 0.001 < it.end).map((it) => it.id);
+      const after = timeline.filter((it) => Math.abs(it.start - c) < 0.02).map((it) => it.id);
+      const times = Array.from({ length: n }, (_, i) => Math.max(0, c - win + step * i));
+      const file = path.join(outDir, 'cut_' + c.toFixed(3) + 's.png');
+      const t0 = Date.now();
+      await writeContactSheet(times, file, { samples, shutter, marks: [c] });
+      log('  t=' + c.toFixed(3) + 's  ' + (before.join('+') || '—') + ' → ' + (after.join('+') || '—')
+        + '  ' + ((Date.now() - t0) / 1000).toFixed(1) + 's  ' + path.relative(ROOT, file));
+    }
+
+    reportErrors(session.info);
+    // 与 still 同一条底线：错帧卡片是一张"看起来有内容"的 PNG，不点名就会被当成画面
+    const rerr = await collectRenderErrors({ take: false });
+    if (rerr.count) {
+      warn('\n⚠ 刚渲染的帧里有场景异常：' + rerr.count + ' 帧');
+      for (const line of rerr.text.slice(0, 6)) warn('  · ' + line);
+      warn('  → 上面那些 PNG 是**错帧卡片**（暗红底 + 红框 + ✗ SCENE ERROR），不是画面内容。');
+      process.exitCode = 1;
+    }
+    log('\n下一步：用 Read 工具看这些 PNG —— 画着信号色方框的那一格就是切点。');
   } finally { await closeSession(); }
 }
 
@@ -2590,7 +2954,7 @@ async function cmdProbe() {
 /**
  * **P1-2 定位实验**：同一时刻，为什么"逐帧顺着渲"与"直接 seek 过去渲"不一样？
  *
- * 背景（`docs/IMPROVEMENTS-2.md` P1-2）：把成片抽帧和 `still` 重渲比对，同一个 t
+ * 背景（`docs/history/IMPROVEMENTS-1-3.md` P1-2）：把成片抽帧和 `still` 重渲比对，同一个 t
  * 长期只能部分通过。beast 那轮的实测是：从 85s 起渲到 112s 的窗口 vs 从 110s 起渲
  * 同一窗口 → 34.8 dB；从 105s 起（预热 5 秒）→ 33.2 dB。也就是说
  * **"每帧是 t 的纯函数"这句话在像素层面只在同一个渲染序列内成立**。
@@ -2901,7 +3265,13 @@ async function cmdProbeAlpha() {
       }
       const blank = s0 / (px0.length / 4);
       // ⚠ 光看 mean 分不清"空参考帧"和"错帧卡片"（错帧卡片也会有一个中等偏亮的 mean）。
-      //   把 max 也量出来：只 clear 一个暗色时 max ≈ 0.06，而错帧卡片有亮红边框 → max ≈ 0.9。
+      //   把 max 也量出来：只 clear 一个暗色时 max ≈ 0.10，而错帧卡片有亮红边框 → max ≈ 0.9。
+      //
+      // ⚠⚠ 这个数是 **0.10 不是 0.06**（BACKLOG 1-5 核正过，2026-10-16）：`readPixels()` 读的是
+      //   **sRGB 编码之后**的显示空间值，而 SENTINEL 那个 0.01 是**线性**值 ——
+      //   `lin2srgb(0.01) ≈ 0.1005`。0.06 是拿线性值当显示值算出来的（旧注释写错了口径）。
+      //   **别照着它去"修" blank**：把 0.10 掰成 0.06 会让 ⑤⑥ 两条判据集体失真。
+      //   相对判据（下面的 `meanOf()` 减参考）本来就不受这个口径影响。
       const blankMax = mx0;
       void SENTINEL;
       // 参考帧的 post 到底是什么？判据依赖"用例与参考用同一套 post"，
@@ -3012,7 +3382,8 @@ async function cmdProbeAlpha() {
     });
 
     log(`参考（只有背景、没有字）：mean ${r.blank.toFixed(5)}  max ${r.blankMax?.toFixed(4)}`
-      + `（只 clear 一个暗色时 max 应 ≈0.06；≈0.9 说明画的是**错帧卡片**而不是空参考）`);
+      // ⚠ 0.10 而不是 0.06：readPixels 是 sRGB 编码后的显示空间，lin2srgb(0.01) ≈ 0.1005（BACKLOG 1-5）
+      + `（只 clear 一个暗色时 max 应 ≈0.10；≈0.9 说明画的是**错帧卡片**而不是空参考）`);
     log('一行字 alpha:[0,1]、stagger:0（不写）—— 减去参考后的平均亮度：');
     const r2 = r.frames.map((x) => ({ t: x.t, mean: x.mean - r.blank }));
     for (const x of r2) log(`  t=${x.t.toFixed(2)}  mean ${x.mean.toFixed(5)}`);
@@ -3072,12 +3443,12 @@ async function cmdProbeAlpha() {
       process.exitCode = 1;
     }
     if (!(c5 && c6)) {
-      warn('\n✗ 数值型 alpha 语义不对（IMPROVEMENTS-2 P0-1）—— 它必须是常量不透明度，');
+      warn('\n✗ 数值型 alpha 语义不对（docs/history/IMPROVEMENTS-1-3.md P0-1）—— 它必须是常量不透明度，');
       warn('  且 alpha:1 必须画得出来。检查 text.js 里 `alphaIsRamp` / `constAlpha` 两行。');
       process.exitCode = 1;
     }
     if (!(c7 && c8 && c9)) {
-      warn('\n✗ 旁白层接线有问题（IMPROVEMENTS-2 P1-5）—— 检查 engine.load 有没有收到 narration、');
+      warn('\n✗ 旁白层接线有问题（docs/history/IMPROVEMENTS-1-3.md P1-5）—— 检查 engine.load 有没有收到 narration、');
       warn('  _ctxFor 有没有把 this.narration 挂到 ctx 与 f 上。');
       process.exitCode = 1;
     }
@@ -3135,7 +3506,7 @@ async function cmdVerify() {
     const items = session.info.timeline;
     const set = new Set();
     /**
-     * 探针时刻要抬到**帧内**（`docs/IMPROVEMENTS-2.md` P1-3 的第 3 条）。
+     * 探针时刻要抬到**帧内**（`docs/history/IMPROVEMENTS-1-3.md` P1-3 的第 3 条）。
      *
      * 原来的默认探针里有 `it.start - 1/fps`（切点前一帧）—— 那正好落在**帧边界**上。
      * 而"帧边界"这个时刻本身是有歧义的：引擎算帧号用 `floor(t*fps + 1e-6)`，
@@ -3232,7 +3603,7 @@ async function cmdVerify() {
 /**
  * 用 ffmpeg 从成片里取**第 N 帧**（N 由时刻算出来），输出 RGBA（翻成与浏览器 readPixels 一致的方向：自下而上）。
  *
- * 为什么按**帧号**取，而不是按时间（`docs/IMPROVEMENTS-2.md` P1-3）：
+ * 为什么按**帧号**取，而不是按时间（`docs/history/IMPROVEMENTS-1-3.md` P1-3）：
  *   旧实现用 `select='between(t, t±0.5/fps)'` —— 那是个**闭区间**，而且 t 是用
  *   `toFixed(6)` 写进 filter 字符串的。在帧边界上（默认探针里的 `it.start - 1/fps`
  *   正好是帧边界）它会同时框住前后两帧，抽到哪一帧取决于浮点尾数；
@@ -3350,13 +3721,25 @@ async function cmdAudit() {
   await openSession({ task, only: opt('only', undefined) });
   try {
     const r = await session.page.evaluate(() => /** @type {any} */ (window).__anim.worldAudit());
-    log(`时间线 ${r.timeline} 段，其中与前一段交叠的 ${r.results.length} 段：`);
-    for (const x of r.results) {
-      log(`  ${String(x.id).padEnd(14)} t=${x.t.toFixed(2)}s  整帧覆盖绘制 ${String(x.full).padStart(3)} 次`
-        + `  本帧总绘制 ${String(x.drawAny).padStart(3)} 次`
-        + `  handlesTransition=${x.handlesTransition ? 'Y' : 'n'}  world=${x.declaredWorld}`
+    // 两个采样时刻都要露出来（BACKLOG 头部 ⑦）：交叠窗中点（判"铺没铺底"）+ 交叠窗之后的中点
+    // （"那一秒到底黑没黑"）。以前只打一个时刻，于是交叠窗之外的部分在这张表里根本不存在。
+    const dump = (x) => {
+      log(`  ${String(x.id).padEnd(14)} handlesTransition=${x.handlesTransition ? 'Y' : 'n'}  world=${x.declaredWorld}`
+        + `${x.selfBase ? '  ← 声明 world: false：不判铺底，只给读数' : ''}`
         + `${x.missing ? '   ← 没铺满整帧（这一段的底是黑的）' : ''}${x.error ? '  错误: ' + x.error : ''}`);
-      if (flag('debug') && x.trace) log(`        整帧覆盖来自: ${x.trace.join('  ///  ')}`);
+      for (const s of x.samples ?? []) {
+        log(`      ${s.error
+          ? `t=${s.t.toFixed(2)}s  渲染出错: ${s.error}`
+          : `t=${s.t.toFixed(2)}s  整帧覆盖 ${String(s.full).padStart(3)} 次  本帧总绘制 ${String(s.any).padStart(3)} 次  亮度 ${s.mean.toFixed(3)}`}`);
+      }
+      if (flag('debug') && x.trace) log(`      整帧覆盖来自: ${(x.trace ?? []).join('  ///  ')}`);
+    };
+    log(`时间线 ${r.timeline} 段；与前一段交叠、**判铺底**的 ${r.results.length} 段`
+      + `（各采两个时刻）；另有 ${(r.selfBase ?? []).length} 段声明了 world: false（不判铺底）：`);
+    for (const x of r.results) dump(x);
+    if ((r.selfBase ?? []).length) {
+      log('');
+      for (const x of r.selfBase) dump(x);
     }
     reportErrors(session.info);
   } finally { await closeSession(); }
@@ -3368,7 +3751,7 @@ async function cmdAudit() {
  * 为什么值得做：`samples=auto` 在"背景一直在动 + 摄影机一直在动"的片子里会持续吃到高子帧，
  * 而 CLI 的 ETA 是**滚动平均** —— 前 30 帧给的是 7000s 这种没用的数字，收敛很慢
  * （实测 1080p60 / 8 子帧约 1.5 fps，60 秒片子 34 分钟）。先花几秒测一次，就能在开渲之前
- * 给出可信的预估（`docs/IMPROVEMENTS.md` P2-3）。
+ * 给出可信的预估（`docs/history/IMPROVEMENTS-1-3.md` P2-3）。
  *
  * 两个刻意的设计：
  *   ① 均匀铺满整片而不是只测开头 —— 运动模糊的子帧数是随画面变化的，
@@ -3427,7 +3810,7 @@ async function printEstimate({ info, from, to, fps, samples, shutter, label }) {
  * 为什么改成秒：以前的名字叫 `minutes`（注释里写"切点落在段边界上，每一块都是完整的镜头"），
  * 但实现是**把时间轴等分成 N 份**再加段边界 —— 60 秒的片子 `--segments 6` 产出 13 块，
  * 其中 11 秒长的镜头被 10.00s 那一刀切成两半，注释的承诺当场作废
- * （`docs/IMPROVEMENTS.md` P2-4）。现在：
+ * （`docs/history/IMPROVEMENTS-1-3.md` P2-4）。现在：
  *   ① 切点**只能落在段边界**上，且该处不能有别的段还在播（不在转场中间切）；
  *   ② 只有当两个切点之间超过 `2 × 目标时长` 时才在中点补一刀（否则长镜头会变成一整块）；
  *   ③ 过短的块（< 1.5s）并进前一块。
@@ -3437,7 +3820,7 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
   const segStart = Date.now();
   // 目标块时长（秒）。默认 15：块间有固定开销（重连浏览器 + 下发推流参数），块越小越亏 ——
   // optifine 那次 `--segments 8` 在 254 秒的片子上切了 35 块，每块开头都要重连一次
-  // （`docs/IMPROVEMENTS-4.md` §6 C 给的经验值：块数 ≈ 时长 / 15）。
+  // （`docs/history/IMPROVEMENTS-4-5.md` §6 C 给的经验值：块数 ≈ 时长 / 15）。
   //
   // ⚠ 裸 `--segments`（后面不跟数字）时 `opt()` 返回 undefined → `Number(undefined)` = NaN，
   //   而 NaN 会一路传进 planSegmentCuts 让每块的边界都变成 NaN（画面全黑且不报错）。
@@ -3634,7 +4017,7 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
   const bad = [...stitchedBad, ...finalBad];
   if (bad.length) {
     try { rmSync(out, { force: true }); } catch { /* ignore */ }
-    // ⚠ 措辞按「已知 / 未知」分开（`docs/BACKLOG.md` 1-3 / `IMPROVEMENTS-4.md` §1.5）：
+    // ⚠ 措辞按「已知 / 未知」分开（`docs/BACKLOG.md` 1-3 / `docs/history/IMPROVEMENTS-4-5.md` §1.5）：
     //   这一步是**确定性**的，写"重跑即可"会把人指偏（那一次照着重跑一遍，白等 30 秒，
     //   帧数一模一样）。措辞现在统一由 `decideGateFailure()` 生成 —— 与分块路径、
     //   并行路径、直播路径共用一个判据，免得同一件事在四个地方四种说法。
@@ -3651,7 +4034,7 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
   // 非有限值扫描的跨块汇总（BACKLOG 1-4）：只报告、不删产物
   reportNonFinite(nfAll, { scanNf, scanned: nfScannedAll, what: '（分块）' });
   // `--segments` 才是中间产物的**大头**（optifine 那次 11.2 GB），而这一段以前从不提示清理
-  // （`docs/IMPROVEMENTS-4.md` §6 E：报告里只有直播路径挂了它）。
+  // （`docs/history/IMPROVEMENTS-4-5.md` §6 E：报告里只有直播路径挂了它）。
   reportIntermediates(task, out);
   // 抖动守门（只对本次重新渲过的块有数据；跳过的旧块不计入）
   if (shakeAll.length) reportShake(analyzeShake(shakeAll, { fps, checkTail: to >= info.duration - 1e-6 }), task);
@@ -3659,7 +4042,7 @@ async function renderSegments({ task, info, out, from, to, fps, samples, shutter
 }
 
 /**
- * 抖动守门（`docs/IMPROVEMENTS-3.md` 建议 F）：出片当场判"这一片是手持还是振动"。
+ * 抖动守门（`docs/history/IMPROVEMENTS-1-3.md` 建议 F）：出片当场判"这一片是手持还是振动"。
  *
  * 为什么把判据放在这里：那次事故（用户说"最后像地震"）是**成片出来之后**才靠
  * 相邻帧互相关反查出来的 —— 眼睛先发现、工具后确认。而 `post.shake` 是设计值、
@@ -3766,7 +4149,13 @@ async function cmdVideo(short = false) {
       const abase = tracks.analysisSource.replace(/\.[^.]+$/, '');
       if (!existsSync(path.join(ROOT, 'tasks', task, 'audio', path.basename(abase) + '.analysis.json'))) {
         warn('· 还没有音频分析数据，先算一遍（让画面能踩拍子）…');
-        await analyzeTaskAudio(task);
+        const an = await analyzeTaskAudio(task);
+        // ⚠ "没做成"必须在这里说清楚（BACKLOG 头部 ④）：出片照样会成功，
+        //   但如果不说，观众看到的是一整片**不踩拍子**的画面，而日志里只有一句 warn。
+        if (!an?.file) {
+          warn(`  ⚠ 音频分析**没做出来**（${an?.skipped ?? '未知原因'}：${an?.message ?? '—'}）——`);
+          warn('    这一次渲染里 f.beat / f.a 全是 0：镜头对不上拍子，但成片不会有别的错。');
+        }
       }
     }
 
@@ -3909,7 +4298,7 @@ async function cmdVideo(short = false) {
     }
     const st = statSync(out);
     log(`  文件大小 ${mb(st.size)}`);
-    reportShake(r.shake, task);          // 抖动守门（IMPROVEMENTS-3 建议 F）
+    reportShake(r.shake, task);          // 抖动守门（docs/history/IMPROVEMENTS-1-3.md 建议 F）
     // 中间产物占了多大，以及怎么清（P2-5：以前一个提示都没有，out/ 悄悄涨到几 GB）
     reportIntermediates(task, out);
     reportErrors(session.info);
@@ -3990,7 +4379,7 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
   } else {
     args.push('-preset', opt('preset', 'medium'), '-crf', opt('crf', withAudio ? '16' : '20'));
   }
-  // ⚠ `-shortest` 必须与 `-af apad` 成对（`docs/IMPROVEMENTS-4.md` §1）：AAC 封装有
+  // ⚠ `-shortest` 必须与 `-af apad` 成对（`docs/history/IMPROVEMENTS-4-5.md` §1）：AAC 封装有
   //   priming/padding，音频流的记账时长会比视频**短几十毫秒**，单独用 `-shortest` 会把
   //   视频尾巴切掉几帧（optifine 那次 −3 帧就是这么来的）。`apad` 把音轨补成无限长（补静音），
   //   于是 `-shortest` 必然停在视频最后一帧上：音轨短了补齐、长了切掉，视频一帧不丢。
@@ -4035,7 +4424,7 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
   /**
    * 每帧的 `post.shake`（页面把它塞在帧头里一起送回来）。
    *
-   * 为什么要收它：`docs/IMPROVEMENTS-3.md` 那次事故（"最后像地震"）是**成片出来之后**
+   * 为什么要收它：`docs/history/IMPROVEMENTS-1-3.md` 那次事故（"最后像地震"）是**成片出来之后**
    * 才靠相邻帧互相关查出来的。shake 是设计值、又跟着帧一起回来，收尾顺手统计一下
    * 就能在出片当场报警 —— 不用再等成片，也不用解析成片。
    * 判据在 `scripts/lib/shake.mjs`（逐帧变化量 ≈ 幅度 ⇒ 逐帧白噪声 ⇒ 60fps 下是振动）。
@@ -4043,7 +4432,7 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
    */
   const shakeSeq = [];
   /**
-   * **模块图 mtime 守门**（`docs/IMPROVEMENTS-2.md` P2-2 的后半条）。
+   * **模块图 mtime 守门**（`docs/history/IMPROVEMENTS-1-3.md` P2-2 的后半条）。
    *
    * 渲染期间改动 `src/` 或 `tasks/<任务>/scenes/` 下的文件 → 私有 Vite 会 HMR
    * 重载页面 → WebSocket 断流 → 推帧提前结束。历史症状是「CLI 报 ✓ 出片成功，
@@ -4241,7 +4630,7 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
    * 曾经的判据是"距上一帧超过 N 秒"→ 它把**正常工作的背压**判成了卡死：
    * ffmpeg 一慢 → 我们按设计停发 ack → 页面停在等 ack（`sent` 当然不涨）→
    * 看门狗收工 → `ff.stdin.end()` → ffmpeg 拿到半截流、永远不写 moov →
-   * 产物是个打不开的 mp4，而 CLI 还以为成功了（`docs/IMPROVEMENTS.md` P0-1）。
+   * 产物是个打不开的 mp4，而 CLI 还以为成功了（`docs/history/IMPROVEMENTS-1-3.md` P0-1）。
    *
    * 现在的判据是"四个信号全都静止了"：
    *   ① 收到新帧   ② 页面侧 sent 在涨   ③ ffmpeg 在排水（stdin 缓冲在变短 / 刚 drain 过）
@@ -4355,7 +4744,7 @@ async function renderToFile({ info, out, from, to, fps, samples, shutter, withAu
   }
   if (ffErr) warn('ffmpeg 启动失败:', ffErr);
   const hist = [...samplesHist.entries()].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}子帧:${v}帧`).join('  ');
-  // 抖动守门（IMPROVEMENTS-3 建议 F）：只统计**设计值**，不碰成片。
+  // 抖动守门（docs/history/IMPROVEMENTS-1-3.md 建议 F）：只统计**设计值**，不碰成片。
   const shake = shakeSeq.length
     ? analyzeShake(shakeSeq, { fps, from, checkTail: to >= (info.duration ?? to) - 1e-6 })
     : null;
@@ -4592,7 +4981,7 @@ async function cmdPerf() {
 /* ------------------------------------------------------------------ 抖动体检 / 音频分轨 */
 
 /**
- * `anim shake <任务>` —— 把整片的 `post.shake` 拉出来量一遍（docs/IMPROVEMENTS-3.md 建议 E）。
+ * `anim shake <任务>` —— 把整片的 `post.shake` 拉出来量一遍（docs/history/IMPROVEMENTS-1-3.md 建议 E）。
  *
  * 为什么需要这条命令：那次事故（用户说"最后像地震"）是**成片出来之后**才靠
  * "相邻帧互相关"反查出来的 —— 眼睛先发现、工具后确认。shake 是场景里的**设计值**，
@@ -4689,7 +5078,7 @@ async function cmdShake() {
 /* ------------------------------------------------------------------ 音频分轨 */
 
 /**
- * 把 `task.audio` 解析成**分轨**（`docs/IMPROVEMENTS-2.md` P1-4）。
+ * 把 `task.audio` 解析成**分轨**（`docs/history/IMPROVEMENTS-1-3.md` P1-4）。
  *
  * 为什么需要：做带旁白的片子时，交给引擎的只有**一条混音轨**（旁白 + 配乐）。
  * 于是 `analyze` 从混音里测 bpm —— **会被人声带偏**：beast 那轮实测出 136bpm，
@@ -4810,7 +5199,11 @@ function readWavMono(file) {
 async function analyzeTaskAudio(task) {
   const tracks = resolveAudioTracks(task);
   const audioFile = tracks.analysisSource;
-  if (!audioFile) return null;
+  // 返回值从"裸 null / 路径"改成**可判定的结果**（BACKLOG 头部 ④，2026-10-16）：
+  // 以前"没做成"只 warn 一句就返回 null，调用方（cmdVideo / ensureAnalysis）拿到 null
+  // 分不清"任务没有音频"和"没 ffmpeg"，于是只能当没事发生 —— "少打一行"那一族的典型形态。
+  // 现在三种结局各有名字：`no-audio` / `no-ffmpeg` / 成功（file 有值）。
+  if (!audioFile) return { file: null, skipped: 'no-audio', message: '任务没有配 audio，没有可分析的轨' };
   const base = audioFile.replace(/\.[^.]+$/, '');
   const target = path.join(ROOT, 'tasks', task, 'audio', path.basename(base) + '.analysis.json');
   const wav = path.join(ROOT, 'out', task, `${path.basename(base)}.mono22k.wav`);
@@ -4819,10 +5212,14 @@ async function analyzeTaskAudio(task) {
   log(`  ${tracks.note}`);
   if (!tracks.music && tracks.analysisSource !== tracks.packaging) {
     warn(`  ⚠ 节拍是从人声轨/混音里测的，` +
-      `\`f.beat\` 可能不准（这正是 IMPROVEMENTS-2 P1-4 那个坑）。`);
+      `\`f.beat\` 可能不准（这正是 docs/history/IMPROVEMENTS-1-3.md P1-4 那个坑）。`);
   }
 
-  if (!(await checkFfmpeg())) { warn('⚠ 没有 ffmpeg，跳过音频分析（画面就不会踩拍子）'); return null; }
+  if (!(await checkFfmpeg())) {
+    const message = '没有 ffmpeg（装一个，或用 ANIM_FFMPEG 指定一个包装器）';
+    warn(`⚠ 音频分析**没做成**：${message} —— 跳过它，画面就不会踩拍子（f.beat / f.a 全是 0）`);
+    return { file: null, skipped: 'no-ffmpeg', message };
+  }
   const wavCmd = ffmpegCmd();
   await new Promise((resolve, reject) => {
     const p = spawn(wavCmd[0], [...wavCmd.slice(1), '-y', '-loglevel', 'error', '-i', audioFile, '-ac', '1', '-ar', '22050', '-c:a', 'pcm_s16le', wav], { stdio: 'inherit' });
@@ -4844,7 +5241,7 @@ async function analyzeTaskAudio(task) {
   writeFileSync(target, JSON.stringify(out));
   const mb = (statSync(target).size / 1048576).toFixed(2);
   log(`✓ 音频分析 ${path.relative(ROOT, target)}  bpm ${out.bpm.toFixed(1)}  ${out.beats.length} 拍  ${out.kicks.length} kick  ${out.snares.length} snare  (${mb} MB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-  return target;
+  return { file: target, skipped: null, message: null };
 }
 
 /** 任务有音频但还没分析时，自动补一次。 */
@@ -4855,7 +5252,7 @@ async function ensureAnalysis(task) {
   const target = path.join(ROOT, 'tasks', task, 'audio', path.basename(base) + '.analysis.json');
   if (existsSync(target)) return target;
   log('· 首次渲染，先做一次音频分析（踩拍子要用）…');
-  return await analyzeTaskAudio(task);
+  return (await analyzeTaskAudio(task)).file;
 }
 
 /* ------------------------------------------------------------------ 命令：clean */
@@ -4880,7 +5277,7 @@ function dirStats(dir) {
 function mb(bytes) { return `${(bytes / 1048576).toFixed(1)} MB`; }
 
 /**
- * 清理 `out/<任务>/` 下的中间产物（`docs/IMPROVEMENTS-2.md` P2-5）。
+ * 清理 `out/<任务>/` 下的中间产物（`docs/history/IMPROVEMENTS-1-3.md` P2-5）。
  *
  * 背景：做 beast 那轮 `out/beast/` 峰值 ≈ 3.8 GB（分块）+ 650 MB 成片 + 284 MB 分发版
  * + 86 MB stills + 我手工产生的 `*.yuv`（每个 400 MB），**没有任何清理提示**。
@@ -5087,7 +5484,7 @@ function cmdNote() {
 
 
 /**
- * `video --parallel N`：把片子切成 N 段**并行**渲染，再自己拼好（`docs/IMPROVEMENTS-2.md` P2-1）。
+ * `video --parallel N`：把片子切成 N 段**并行**渲染，再自己拼好（`docs/history/IMPROVEMENTS-1-3.md` P2-1）。
  *
  * 为什么要进 CLI：那轮实测 2 进程 1.81×、3 进程 2.3×（7650 帧：59 分钟 → 26.1 分钟），
  * 瓶颈在浏览器那侧（`samples=1` 就 214ms/帧），**一个进程吃不满机器**。但手工做这件事
@@ -5250,7 +5647,7 @@ async function renderParallel({ task, info, out, from, to, fps, samples, shutter
       '-i', stitched, '-ss', String(from), '-i', audioFile,
       '-map', '0:v:0', '-map', '1:a:0',
       '-c:v', 'copy', '-c:a', 'aac', '-b:a', '320k',
-      '-af', 'apad', '-shortest',        // ← 与 renderSegments 同一处坑，必须成对（IMPROVEMENTS-4 §1）
+      '-af', 'apad', '-shortest',        // ← 与 renderSegments 同一处坑，必须成对（docs/history/IMPROVEMENTS-4-5.md §1）
       '-movflags', '+faststart', out,
     ]);
   } else {
@@ -5273,7 +5670,7 @@ async function renderParallel({ task, info, out, from, to, fps, samples, shutter
 /**
  * 时间戳守门：帧距与首帧 PTS 是否严格。
  *
- * 为什么帧数对了还要看这个（`docs/IMPROVEMENTS-2.md` P2-1）：拼接如果走了
+ * 为什么帧数对了还要看这个（`docs/history/IMPROVEMENTS-1-3.md` P2-1）：拼接如果走了
  * "先转 MPEG-TS 再拼"，帧数可以是 720、`r_frame_rate` 也写 60，
  * 但 `avg_frame_rate` 变成 43200/719 ≈ 60.08、duration 11.983 —— 帧在时间轴上
  * 不是均匀铺开的（接缝处有半帧级空隙）。这种片子**帧数没错、能播、但节奏是歪的**，
@@ -5392,7 +5789,7 @@ const SHOTS_SCHEMA = 'anim.shots/1';
  * 三条**读法**（它们和字段名一样是契约，写在文档里）：
  *   · `required: true` ⟺ 这个参数**没有默认值**（不传时模板拿到 `undefined`）。
  *     JSON 里没有 `undefined`，所以这时 `default` 恒为 `null`、由 `required` 区分。
- *     当前 8 个模板的每个参数都有默认值 ⇒ 全是 `false`（这只说明"省掉它不会出错"，
+ *     当前 11 个模板的每个参数都有默认值 ⇒ 全是 `false`（这只说明"省掉它不会出错"，
  *     **不**说明"这个参数没用"——画面照样是模板自带的那一段）。
  *   · **缺字段 ≠ false / 空**：`requires` / `outputs` 是 1-21 补上的**声明式 spec**
  *     （`src/shots/*.js` 的 `xxxShot.spec`）。没有 spec 的模板，这两个键**根本不出现** ——
@@ -5497,7 +5894,7 @@ async function cmdShots() {
  * `anim styles` —— 列出全部风格包（`docs/STYLE.md`）。
  *
  * 为什么值得单独一条命令：风格是"整片观感"的开关，而它以前**没有任何入口**
- * （审计结论：8 个镜头模板是 `demo` + `beat` 两支片子的逐像素冻结副本；默认调色板就是
+ * （审计结论：8 个**老**镜头模板是 `demo` + `beat` 两支片子的逐像素冻结副本，2026-10-16 起镜头库共 11 个（新加的 quote / counter / compare 是新写的）；默认调色板就是
  * `tasks/pdoom-lab` 那一支的配色；三份入口文档印着同一段起手场景）。有了这张清单，
  * "下一支换一套"才可能真的发生。
  */
@@ -5672,6 +6069,7 @@ const commands = {
   check: cmdCheck,
   still: cmdStill,
   sheet: cmdSheet,
+  cuts: cmdCuts,
   hashes: cmdHashes,
   diff: cmdDiff,
   probe: cmdProbe,

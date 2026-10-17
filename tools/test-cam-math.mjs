@@ -224,7 +224,7 @@ ok('smearAlpha：总墨水接近 1.6', () => {
 // ⚠ 默认 `mode` 是 `'smooth'`（低频漂移）。为什么把默认值换掉：**「像不像手持」取决于
 //    频率，不是幅度** —— 60fps 下逐帧换一个随机位置（白噪声）看着是"振动/地震"，哪怕
 //    只有 5px；而 0.5–2Hz 的慢漂移即使 38px 也像"有人扶着机器"。教训见
-//    docs/IMPROVEMENTS-3.md（promo 成片实测：RMS 3.64px / 相邻帧差 13px → 0.27 / 1）。
+//    docs/history/IMPROVEMENTS-1-3.md（promo 成片实测：RMS 3.64px / 相邻帧差 13px → 0.27 / 1）。
 //    老的白噪声行为搬到 `mode: 'grain'`，留给"震屏/冲击"这类**故意**要抖的场合。
 ok('handheld(grain)：按帧号播种 —— 同帧同值、异帧异值、幅度不超', () => {
   const cam = { x: 0, y: 0, zoom: 1, rot: 0 };

@@ -27,7 +27,7 @@
 
 | # | 查到的事实 | 证据 |
 |---|---|---|
-| 1 | **8 个镜头模板是两支片子场景的逐像素冻结副本** | `src/shots/title.js` `kinetic.js` `whip.js` `outro.js` `chart.js` 头部注释都写着「绘制代码从 `tasks/demo/scenes/<名字>.js` **逐字**搬过来」；`wave.js` ← `tasks/beat/scenes/intro.js`，`pulse.js` ← `beat/scenes/pulse.js`，`grid.js` ← `beat/scenes/grid.js`。`src/shots/index.js:24–25` 把这条写成了设计意图：「模板里的绘制代码是从已经出过片的场景逐字搬过来的，画面逐像素一致」 |
+| 1 | **8 个老镜头模板是两支片子场景的逐像素冻结副本**（2026-10-16 新加的 `quote` / `counter` / `compare` 是新写的，不受这条约束） | `src/shots/title.js` `kinetic.js` `whip.js` `outro.js` `chart.js` 头部注释都写着「绘制代码从 `tasks/demo/scenes/<名字>.js` **逐字**搬过来」；`wave.js` ← `tasks/beat/scenes/intro.js`，`pulse.js` ← `beat/scenes/pulse.js`，`grid.js` ← `beat/scenes/grid.js`。`src/shots/index.js:24–25` 把这条写成了设计意图：「模板里的绘制代码是从已经出过片的场景逐字搬过来的，画面逐像素一致」 |
 | 2 | **默认调色板就是 `tasks/pdoom-lab` 那一支的配色** | `src/core/palette.js:4`：「默认是 pdoom 那种印刷品配色：墨黑 + 骨白 + 信号橙」 |
 | 3 | **三份入口文档印着同一段起手场景** | `README.md:121`、`AGENTS.md:148`、`docs/COOKBOOK.md:339` 三处都是 `type.write('写代码，就是做动画', 100, 400, {…})`（`docs/ENGINE.md:324` 是同一段的变体）。新人照抄的就是它 |
 | 4 | **分镜规范直接把「照抄」写成纪律** | `out/_staging/SCENE-BRIEF.md` §3 标题原文：「视觉语言（全片统一，**照这个来，不要自创**）」 |
@@ -323,8 +323,8 @@ Cleo Abram / MKBHD / Fireship）逐帧反推的测量：
 
 | 做不到什么 | 为什么 | 出路 |
 |---|---|---|
-| **A 档镜头模板的背景换不掉** | `src/shots/` 的 8 个模板**每个都自己铺满整帧**（`docs/ENGINE.md` §14.4：这是设计意图 —— 它们要"取一个整镜头"，不能依赖外面的背景）。所以 `motif` 只对**手写场景 + `world: 'auto'`** 那条路有效 | 换背景母题就**手写场景**（`makeShot`），任务里写 `export const world = (ctx) => worldPass(ctx, { motif: 'auto' })`；模板镜头就接受它自带的背景 |
-| **模板的版面坐标是固定的** | 8 个模板的 x/y 是硬编码的（例如 `chart` 的柱子位置），`style.grid.pad` **不会**移动它们 | `style.grid` 只对 `src/kit/` 的版面元件（`bands()` / `captionNote()`）与字幕层生效；要换版面就手写场景 |
+| **A 档镜头模板的背景换不掉** | `src/shots/` 的 11 个模板**每个都自己铺满整帧**（`docs/ENGINE.md` §14.4：这是设计意图 —— 它们要"取一个整镜头"，不能依赖外面的背景）。所以 `motif` 只对**手写场景 + `world: 'auto'`** 那条路有效 | 换背景母题就**手写场景**（`makeShot`），任务里写 `export const world = (ctx) => worldPass(ctx, { motif: 'auto' })`；模板镜头就接受它自带的背景 |
+| **模板的版面坐标是固定的** | 11 个模板的 x/y 是硬编码的（例如 `chart` 的柱子位置），`style.grid.pad` **不会**移动它们 | `style.grid` 只对 `src/kit/` 的版面元件（`bands()` / `captionNote()`）与字幕层生效；要换版面就手写场景 |
 | **`paper` 这类浅底风格不是"安全的"** | 浅底最怕泛光（代码注释原文）。场景里任何高 `bloom`、`mul(col, 1.6)` 的发光写法都会在浅底上糊掉 | 用 `paper` 时把泛光留给**信号色**，正文一律不发光（`AGENTS.md` §5） |
 | **`motif` 只有五档** | `MOTIF_ID` 里是 `grid` / `blueprint` / `paper` / `scan` / `noir`；名字不认识会落到第 0 档（`grid`），**不报错** | 要第六种母题就在任务自己的 `scenes/_world.js` 里写一个局部背景 Pass，让 `cut(shot, { world: … })` 用它 |
 | **风格包不改变"事实纪律"与"确定性"** | 它只是一个数据对象 | 见 [`docs/SCENE-BRIEF-TEMPLATE.md`](./SCENE-BRIEF-TEMPLATE.md) §4 的分级 |

@@ -710,7 +710,7 @@ export function beatPulse(t, period = 0.5, half = 0.11) {
  *   幅度 1.1px（安静段）→ 2.4px（俯冲）→ 落版衰减到 0.25 倍（镜头停住，画面也就稳了）。
  *   用 `t` 而不是 `f.idx`：平滑函数在一帧的 8 个子帧之间只差 ~0.02px ——
  *   双重曝光是白噪声才有的问题，而平滑抖动会像真实抖动那样被运动模糊带一点。
- *   引擎侧的证据与建议见 `docs/IMPROVEMENTS-3.md`。
+ *   引擎侧的证据与建议见 `docs/history/IMPROVEMENTS-1-3.md`。
  */
 export function postAt(f, extra = {}) {
   const dive = prog(f.t, SEG.lattice.at, SEG.lattice.at + SEG.lattice.dur, 'inOutCubic');

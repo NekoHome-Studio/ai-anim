@@ -1,6 +1,6 @@
 // P2-3 回归：`prog()` 的缓动名写错必须**警告**，而不是静默退化成 linear。
 //
-// 背景（docs/IMPROVEMENTS-2.md P2-3）：`ease[name] ?? ease.linear` —— 拼错一个字母
+// 背景（docs/history/IMPROVEMENTS-1-3.md P2-3）：`ease[name] ?? ease.linear` —— 拼错一个字母
 // （`'outCubicc'`）画面上只是"动起来有点平"，完全看不出是打错了字。
 //
 // 难点：`src/core/util.js` 里没有 `import.meta`，但它 import 了别的模块、也不能直接

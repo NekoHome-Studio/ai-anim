@@ -1191,7 +1191,7 @@ async function main() {
             + `          idx=${idx}   ${a.rec.sig[di.i] ?? '(没有这个调用)'}\n`
             + `          idx=${idx + 7}   ${variant.rec.sig[di.i] ?? '(没有这个调用)'}${intent}\n`
             + `          刻意的逐帧抖动（grain / 甩帧）可以忽略；但画面**位置**跟着 idx 变属于"振动"不是手持`
-            + `（用 shakeSmooth(f.t, amp)，见 docs/IMPROVEMENTS-3）`,
+            + `（用 shakeSmooth(f.t, amp)，见 docs/history/IMPROVEMENTS-1-3.md）`,
         });
       }
     }
@@ -1313,7 +1313,7 @@ function skeletonCheck(pr, rec, inOverlap, lt, t) {
   }
   // 交叠期：自己声明了 handlesTransition 的段必须铺满整帧，否则那一段的底是纯黑且不报错
   if (inOverlap && pr.scene?.handlesTransition && !s.bigFill && !s.inkClear && rec.paint.full === 0 && !pr.item.world && !pr.ownWorld) {
-    push('bg', '交叠期这一帧没有铺满整帧的底（没有整帧 Pass / 全屏 fillRect / 非黑 gl.clear）—— 底会是纯黑，而且不报错（docs/IMPROVEMENTS.md P0-2）');
+    push('bg', '交叠期这一帧没有铺满整帧的底（没有整帧 Pass / 全屏 fillRect / 非黑 gl.clear）—— 底会是纯黑，而且不报错（docs/history/IMPROVEMENTS-1-3.md P0-2）');
   }
 }
 
@@ -1326,7 +1326,7 @@ function skeletonCheck(pr, rec, inOverlap, lt, t) {
  *
  * 真正值得报的是这三种（都要**整段**成立才报）：
  *   ① 一次字形都没画出来，而且写了非空的字 ⇒ 这块字在成片里根本不存在
- *      （beast 那次的"字典 4 个大格凭空消失"就是这一类，docs/IMPROVEMENTS-2 P0-1）；
+ *      （beast 那次的"字典 4 个大格凭空消失"就是这一类，docs/history/IMPROVEMENTS-1-3.md P0-1）；
  *   ② 同一行字写了好几次、一次都没画出来 ⇒ 这行字永远不会出现（t/stagger 对不上）；
  *   ③ 整段都在 upload / comp.draw 文字层，却一个字都没写 ⇒ 这层字是死的。
  */
@@ -1343,7 +1343,7 @@ function glyphVerdict(pr) {
   if (inv.length && !withGlyphs.length) {
     add('text-invisible', `整段一次字形都没画出来：${inv.reduce((a, b) => a + b.invisible, 0)} 次 type.write 全部被 k ≤ 0 跳过`
       + `（${inv.length}/${s.length} 个时刻都这样，含段尾）—— 这块字在成片里不存在。`
-      + `stagger/staggerDur 与传给它的 t 对不上（docs/IMPROVEMENTS-2 P0-1）`);
+      + `stagger/staggerDur 与传给它的 t 对不上（docs/history/IMPROVEMENTS-1-3.md P0-1）`);
   }
   const never = [...pr.textSeen.entries()]
     .filter(([k, v]) => k.length > 0 && v.calls >= 2 && v.drawn === 0).map(([k]) => k);

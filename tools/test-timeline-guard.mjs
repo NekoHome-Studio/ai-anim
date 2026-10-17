@@ -1,7 +1,7 @@
 // 单测（不需要 GPU / 浏览器）：时间线这一层守着两件事。
 //
 // ── 守门一｜旧：时间线 DSL 必须**拒绝**非法节点，而不是静默降级 ──────────────
-// 背景（docs/IMPROVEMENTS-2.md P0-2）：写 beast 时我写了个助手
+// 背景（docs/history/IMPROVEMENTS-1-3.md P0-2）：写 beast 时我写了个助手
 //     const seg = (id) => ({ scene: SHOT[id], opt: {...} });   // 忘了 return cut(...)
 // 旧 `seq()` 照单全收 → 引擎把它当成 N 段匿名场景，每段默认 4 秒：
 // `check` 报「时长 48.00s、段名 scene/scene_2/…」，真实时间线是 127.5s / 12 个具名段，

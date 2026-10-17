@@ -6,7 +6,7 @@
  *
  * 做 `tasks/beast` 时"旁白决定镜头多长"这件事是在引擎外面手搓的
  * （`tasks/beast/tools/say.mjs`，127 行，每支带旁白的片子都要重写一遍，而且
- * 里面的 `BPM = 96` 是写死的 —— 这正是 `IMPROVEMENTS-2.md` P1-4
+ * 里面的 `BPM = 96` 是写死的 —— 这正是 `docs/history/IMPROVEMENTS-1-3.md` P1-4
  * "节拍被人声带偏"那个坑的另一半）。这里把那套逻辑收进引擎，并修掉写死 BPM 的问题。
  *
  * ## 数据流
@@ -536,7 +536,7 @@ export function synthLine(driver, { file, text, voice, rate, force = false }) {
      * —— 而"重新跑一次"就能过（缓存会把前面 22 句跳过）。这里自己重试两次。
      */
     /**
-     * ⚠ 判据必须**看文件大小**，不能只看 `existsSync`（`docs/IMPROVEMENTS-4.md` §6 A）：
+     * ⚠ 判据必须**看文件大小**，不能只看 `existsSync`（`docs/history/IMPROVEMENTS-4-5.md` §6 A）：
      *   edge-tts 会偶发"退出码 0、却写出 0 字节的 mp3"（optifine 那轮有一条 `outro-2.mp3`
      *   就是 0 字节，命令继续往下跑，直到混音/时长表拿它没辙才暴露）。
      *   0 字节 = 这次合成事实上失败了 —— 删掉重试，绝不把空文件当成功。

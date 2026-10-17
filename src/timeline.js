@@ -58,6 +58,9 @@ export function isConfigNode(node) {
 const TIMELINE_KEYS = new Set([
   'type', 'id', 'dur', 'at', 'overlap', 'params', 'post', 'maxSamples',
   'handlesTransition', 'note', 'world', 'worldPass',
+  // 主体声明（版面守门，docs/LAYOUT.md）：配置档节点上也写得了 ——
+  // 不加进这张表它就会被当成模板参数，"参数名拼错"抛出去（正是这张表存在的理由）。
+  'focus',
 ]);
 
 /**
@@ -65,10 +68,10 @@ const TIMELINE_KEYS = new Set([
  *
  * 模板参数 = 节点上除时间线字段以外的**所有**键（也可以显式写在 `params` 里，它优先）。
  * 键名写错会**抛错**：`{ type: 'chart', value: […] }`（少个 s）→ 指名"没有参数 value"，
- * 而不是静默吃默认值画出一张看起来正常的图（`docs/IMPROVEMENTS-2.md` 那类 bug 的通用解法）。
+ * 而不是静默吃默认值画出一张看起来正常的图（`docs/history/IMPROVEMENTS-1-3.md` 那类 bug 的通用解法）。
  */
 function configToCut(node, where) {
-  const { type, id, dur, at, overlap, params, post, maxSamples, handlesTransition, note, world, worldPass, ...rest } = node;
+  const { type, id, dur, at, overlap, params, post, maxSamples, handlesTransition, note, world, worldPass, focus, ...rest } = node;
   const tparams = { ...rest, ...(params ?? {}) };
   if (id != null) tparams.id = id;          // ⚠ 不能写成 tparams.id = id：undefined 会盖掉模板默认段名
   let scene;
@@ -92,6 +95,7 @@ function configToCut(node, where) {
     handlesTransition,
     note,
     world: worldPass ? 'auto' : world,
+    focus,
   };
 }
 
@@ -100,12 +104,15 @@ function configToCut(node, where) {
  * @param {any} scene 场景对象、类，或 () => import('./scenes/x.js') 懒加载
  * @param {{ id?: string, dur?: number, params?: Record<string, any>, post?: any,
  *           maxSamples?: number, handlesTransition?: boolean, note?: string,
- *           overlap?: number, at?: number, world?: any, worldPass?: boolean }} [opts]
+ *           overlap?: number, at?: number, world?: any, worldPass?: boolean,
+ *           focus?: 'center'|{x:number,y:number,w:number,h:number}|{cx:number,cy:number,w:number,h:number} }} [opts]
  *        `world`：这一段用的**共享背景**（两种写法）——
  *          `world: 'auto'`（或 `worldPass: true`）→ 用 ctx.worldPass（task.config 里那个）；
  *          `world: new Pass(...)`                → 这一段专用；
  *          `world: false`                        → 明确表示"本段自己负责整帧底"。
  *        不写 = 场景自己在 render 里画背景（引擎不做任何假设）。
+ *        `focus`：**主体声明**（版面守门，见 docs/LAYOUT.md）—— 「这一段观众看哪里」。
+ *        不写时引擎会退回场景对象自己声明的那份（`export default { focus: 'center' }`）。
  */
 export function cut(scene, opts = {}) {
   return {
@@ -121,6 +128,8 @@ export function cut(scene, opts = {}) {
     note: opts.note,
     overlap: opts.overlap ?? 0,
     world: opts.worldPass ? 'auto' : opts.world,
+    // 主体声明（版面守门）：与 world 一样在这里白名单化 —— 忘了这一行就会静默丢失
+    focus: opts.focus,
   };
 }
 
@@ -252,6 +261,10 @@ export function build(plan, music = {}) {
       post: c.post,
       maxSamples: c.maxSamples,
       handlesTransition: c.handlesTransition,
+      // 主体声明（版面守门，见 docs/LAYOUT.md）：搬运到段上，引擎的 ctx.focus 读它。
+      // 场景对象自己也可以声明一份（engine 里是 `item.focus ?? scene.focus`），
+      // 段上这份优先 —— 同一支片子里某一段想换主体时不必去改场景文件。
+      focus: c.focus,
       note: c.note,
       // 共享背景：'auto' = 用 task.worldPass；对象 = 本段专用 Pass；false = 本段自己负责底
       world: c.world,
@@ -292,7 +305,7 @@ function previewKeys(v) {
 /**
  * 校验一个"应该长成时间线节点"的东西 —— 不是就**立刻抛错**。
  *
- * 为什么必须抛（`docs/IMPROVEMENTS-2.md` P0-2）：做 beast 时我写了个助手
+ * 为什么必须抛（`docs/history/IMPROVEMENTS-1-3.md` P0-2）：做 beast 时我写了个助手
  * `const seg = (id) => ({ scene: SHOT[id], opt: {...} })`，忘了让它返回 `cut(scene, opt)`。
  * 旧 `seq()` 照单全收，引擎把它当成 N 段匿名场景：每段默认 4 秒 → `check` 报
  * 「时长 48.00s、段名 scene/scene_2/…」，真实时间线是 127.5s / 12 个具名段，
@@ -395,6 +408,165 @@ function nameOf(scene) {
 
 /** 懒加载一个场景模块：cut(() => import('./scenes/x.js')) 的简写 */
 export function lazy(loader) { return loader; }
+
+/**
+ * **段级审计：依赖令牌 `under` 真的满足吗？**（BACKLOG 头部 ② 的收口，2026-10-16）
+ *
+ * 为什么这件事必须放在**时间线展开之后**做：`whip` 这类转场模板的画面来自
+ * 「把上一段的成帧（`ctx.under`）甩走」，而引擎只在**两段交叠的那一小段**里给得出 `ctx.under`
+ * （`src/core/engine.js` 的 `under: k > 0 ? under : null` —— 交叠窗之外这一段就是
+ * `items[0]`，没有"上一段"）。所以"交叠够不够"只在 `build()` 排完时间之后才是个事实，
+ * 而**任务源码文本**里看不出来（对象可以跨行、可以 `seq()` 拼、`--only` 之后段表还会变）——
+ * 这正是 1-21 当初把 `under` 记成"只声明、没接线"的理由（"假报比不报贵"）。
+ *
+ * 现在段对象自己带着模板的 `requires`（`src/shots/index.js` 的 `shot()` 搬运），
+ * 于是这条依赖可以**判准**，而不是靠猜：
+ *
+ *   · `missing`           —— 这一段是**第一段**（`i === 0`）之外的段，却与**上一段没有交叠**
+ *     （`start >= prev.end`）。`ctx.under` 恒为 `null` ⇒ 模板退回"没有 under"那条分支，
+ *     甩镜类画面**几乎是黑的**，而且不报错。**这是硬问题**。
+ *   · `noPrev`            —— 它就是第一段：没有"上一段"可比，**不判**。
+ *     （`--only` 会把选中的段平移到时间轴开头，所以这条同样覆盖"只挑一段试渲染"的场景。
+ *      `noPrev` **不是通过** —— "`空 ≠ 干净`"，调用方必须把这句说出来。）
+ *   · `doubleTransition`  —— 与上一段交叠了，但**没声明 `handlesTransition`**：
+ *     引擎于是会在这上面再叠一次交叉溶解（`engine.js` 的 `k > 0 && !scene.handlesTransition`），
+ *     "甩走"被稀释成两屏叠一起。**是观感问题，不是没画**。
+ *
+ * 判据全部来自**已展开的段对象**（`start` / `end` / `handlesTransition` / `requires`），
+ * 不读源码文本、不猜，所以可以离线单测（`tools/test-timeline-audit.mjs`）。
+ *
+ * ⚠ 场景对象有两个放法，两个都要认：`build()` 的产物放在 `scene`（还没解析），
+ *   引擎跑起来之后是 `_scene`（setup 过的那个）。**单测就是这么发现漏的** ——
+ *   只认 `_scene` 时，`build()` 直接喂进来的一条都查不到（"零命中"看着像"全都满足"）。
+ *
+ * ⚠ 口径必须与引擎**逐字一致**：`handlesTransition` 读**场景**那一份兜底
+ *   （`it.handlesTransition ?? it._scene?.handlesTransition`）——
+ *   配置档节点上没写时段对象上是 `undefined`，而模板自带的那份在**场景**上
+ *   （背景守门 ① 就是因为两者不齐而少算了一段）。
+ *
+ * @param {any[]} items `build()` 的产物（或引擎 `engine.timeline`）
+ * @returns {{ id: string, index: number, start: number, end: number, requires: string[],
+ *             handlesTransition: boolean, overlaps: boolean, noPrev: boolean,
+ *             missing: boolean, doubleTransition: boolean }[]}
+ */
+export function auditUnderRequires(items) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i] ?? {};
+    // ⚠ 场景对象有两个放法，两条路都要认（单测就是这么发现漏的）：
+    //   · `build()` 的产物把场景放在 `scene`（还没解析）；
+    //   · 引擎跑起来之后是 `_scene`（setup 过的那个，`engine.js` 里赋值）。
+    //   优先 `_scene`，回落到 `scene`。
+    const scene = it._scene ?? it.scene ?? null;
+    const req = Array.isArray(it.requires) ? it.requires
+      : (Array.isArray(scene?.requires) ? scene.requires : null);
+    if (!req || !req.includes('under')) continue;
+    const handlesTransition = !!(it.handlesTransition ?? scene?.handlesTransition);
+    const prev = i > 0 ? list[i - 1] : null;
+    // ⚠ 与背景守门同一条判据：比 start 与上一段的 end，不是比结束时刻
+    //   （结束时刻被 overlap 推走过，用它判断会把整段漏掉）。
+    const overlaps = !!prev && Number(it.start) < Number(prev.end);
+    const noPrev = i === 0;
+    out.push({
+      id: String(it.id ?? `scene_#${i}`),
+      index: i,
+      start: Number(it.start ?? 0),
+      end: Number(it.end ?? 0),
+      requires: [...req],
+      handlesTransition,
+      overlaps,
+      noPrev,
+      missing: !noPrev && !overlaps,
+      doubleTransition: !noPrev && overlaps && !handlesTransition,
+    });
+  }
+  return out;
+}
+
+/**
+ * **背景守门的采样计划**（纯函数，BACKLOG 头部 ①⑦ 的收口，2026-10-16）。
+ *
+ * 为什么要抽出来：`src/app.js` 的 `worldAudit()` 要"渲染一帧、看它有没有铺底"，
+ * 而**在哪几个时刻渲染、哪几段判、哪几段只给读数**全是纯逻辑 —— 混在页面侧的 GPU 代码里就
+ * 只能靠肉眼验证。抽到这里之后，`tools/test-timeline-audit.mjs` 能离线钉住三件事：
+ *
+ *   ① **采两个时刻**：交叠窗中点（**判**"这一段铺没铺底"）+ **交叠窗之后的中点**（**只读数**）。
+ *      以前只有前者，于是"交叠窗之外那一秒"连个数字都没有（`_config-lab` 的甩镜
+ *      19.50–20.50 就是这样一段没人看的区间）。段短到没有窗后部分时只采一个点。
+ *      ⚠ 窗后点**不参与判据** —— 理由与实测数字在 `worldAuditVerdict()` 的注释里。
+ *   ② **口径与引擎逐字一致**：`handlesTransition` 读段上那份，段上没有读**场景**那份
+ *      （`_scene` 或 `scene`；引擎读的是场景那份 —— 配置档节点没写时它到不了段对象）。
+ *   ③ **`world: false` 的段单独一类**：`judged: false`（"整帧底我自己负责"是合法声明，
+ *      不判它铺没铺底），但**照样给采样时刻** —— 声明不等于"这段没人看着"。
+ *
+ * 判据（与 `worldAudit()` 里的注释同一份）：只查"与前一段交叠"的段 ——
+ * 只有那时才有转场语义（`tin` / `tout` / `under` 才有意义）。比较用 `start < prev.end`，
+ * **不是**比结束时刻（结束时刻被 overlap 推走过，用它判断会把整段漏掉）。
+ *
+ * @param {any[]} items `build()` 的产物或引擎的 `engine.timeline`
+ * @returns {{ id: string, index: number, start: number, end: number, times: number[],
+ *             handlesTransition: boolean, selfBase: boolean, declaredWorld: string,
+ *             risky: boolean, judged: boolean }[]}
+ */
+export function planWorldAudit(items) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  for (let i = 1; i < list.length; i++) {
+    const it = list[i] ?? {}, prev = list[i - 1] ?? {};
+    const start = Number(it.start ?? 0), end = Number(it.end ?? 0), prevEnd = Number(prev.end ?? 0);
+    if (!(start < prevEnd)) continue;                 // 没有交叠 ⇒ 没有转场语义 ⇒ 不查
+    const scene = it._scene ?? it.scene ?? null;
+    const handlesTransition = !!(it.handlesTransition ?? scene?.handlesTransition);
+    const selfBase = it.world === false;
+    const declaredWorld = selfBase ? 'self' : (it.world === 'auto' ? 'auto' : (it.world ? 'custom' : 'none'));
+    // 只有"声明了 handlesTransition / 转场"的段会被判为问题：
+    // 没有转场语义的简单段清个底色就够了，不该被要求画全屏 Pass。
+    const risky = handlesTransition || declaredWorld !== 'none';
+    const span = Math.min(prevEnd, end) - start;
+    const times = [start + Math.max(0.02, span * 0.5)];
+    const tailSpan = end - prevEnd;
+    if (tailSpan > 0.05) times.push(prevEnd + tailSpan * 0.5);
+    out.push({
+      id: String(it.id ?? `scene_#${i}`), index: i, start, end, times,
+      handlesTransition, selfBase, declaredWorld, risky,
+      /** `judged === false` ⇒ 只给读数，不判"铺没铺底"（当前只有 `world: false` 这一类） */
+      judged: !selfBase,
+    });
+  }
+  return out;
+}
+
+/**
+ * **背景守门的判定**（纯函数）：把采样计划 + 每一刻的绘制账目/亮度变成两个事实。
+ *
+ * ⚠ 这一条是**踩过假报之后**才长成这样的（2026-10-16，BACKLOG 头部 ⑦）：
+ *   · **判据只落在第一个采样点（交叠窗中点）**：`full === 0 && risky` ⇒ `missing`。
+ *   · 第二个采样点（**交叠窗之后**的中点）**只做读数，不判**。
+ *     为什么：`ctx.under` 只在交叠窗里有值 ⇒ 窗后那一段，转场模板走的是"没有 under"的分支，
+ *     而那条分支**本来就可能是近黑的**（`whip` 的设计：把画面甩走之后只剩
+ *     `col *= mix(1.0, 0.15, k)` 压出来的 15% + 颗粒，实测 0.037–0.051，
+ *     `tasks/demo` 与 `tasks/_config-lab` 都是这个数）。第一版把同一条 `full === 0` 判据
+ *     也压在窗后点上，于是 `check demo` 当场把一个**设计如此**的尾巴报成了"没铺背景"——
+ *     "假报比不报更贵"，所以窗后点退回成读数。
+ *   · `blackTail` 是**读数型**的事实（窗后中点 < 0.004）：它不 gate，只给报告一行 ——
+ *     真正"拿不到 under"那种事故由**段级审计**（`auditUnderRequires()`，没有交叠 ⇒ 硬问题）抓住。
+ *
+ * @param {{ judged?: boolean, risky?: boolean }|null} plan `planWorldAudit()` 的一项
+ * @param {{ full?: number, mean?: number, error?: string }[]} samples 按计划渲染出来的读数
+ * @returns {{ missing: boolean, blackTail: boolean, tail: object|null }}
+ */
+export function worldAuditVerdict(plan, samples) {
+  const p = plan ?? {};
+  const list = Array.isArray(samples) ? samples : [];
+  const first = list[0] ?? null;
+  const tail = list.length > 1 ? list[1] : null;
+  // `world: false`（"整帧底我自己负责"）不进这条判据 —— 那是它的声明
+  const missing = !!p.judged && !!p.risky && !!first && !first.error && first.full === 0;
+  const blackTail = !!p.risky && !!tail && !tail.error
+    && typeof tail.mean === 'number' && tail.mean < 0.004;
+  return { missing, blackTail, tail };
+}
 
 /** 打印时间线（CLI 的 tasks/check 用）。 */
 export function describe(timeline) {

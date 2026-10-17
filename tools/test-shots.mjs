@@ -1,6 +1,6 @@
 // A 档镜头库 `src/shots/` 的离线回归：**只查「写错了但画面照样出」那一类**。
 //
-// 为什么是这几条（docs/IMPROVEMENTS-2.md）：这个引擎最贵的 bug 全都一路绿灯 ——
+// 为什么是这几条（docs/history/IMPROVEMENTS-1-3.md）：这个引擎最贵的 bug 全都一路绿灯 ——
 //   ① 参数名拼错（`shot('chart', { value: [...] })` 少个 s）→ 模板悄悄吃默认值，画面照样出，
 //      只有人眼看图才发现"怎么还是那三根柱子"；
 //   ② `meta.params` 里漏登记一个参数（或登记了一个不存在的）→ `anim shots` 的文档与代码脱节，
@@ -14,7 +14,7 @@
 //   node tools/test-shots.mjs
 //
 // 覆盖：
-//   §1 SHOTS / listShots() 的登记（8 个模板名，多一个少一个都红）
+//   §1 SHOTS / listShots() 的登记（模板名集合，多一个少一个都红）
 //   §2 文档与代码一致：listShots()[i].params 的名字集合 == 该工厂 defaults 的键集合（核心守门），
 //      且列出的 default 就是 defaults 里的值
 //   §3 shot(name) 拿到的场景对象有 id（字符串）与 render（函数）；whip 必须是转场镜头
@@ -45,8 +45,15 @@ function findRoot(from) {
 }
 const ROOT = findRoot(HERE);
 
-/** 镜头库必须正好是这 8 个模板名（顺序不查，集合必须相等）。 */
-const TEMPLATES = ['title', 'chart', 'kinetic', 'whip', 'outro', 'wave', 'pulse', 'grid'];
+/**
+ * 镜头库必须正好是这些模板名（顺序不查，集合必须相等）。
+ * ⚠ 这张表是**手写的**，不从 SHOTS 里读 —— 它要的就是"多一个少一个都红"。
+ *   加模板时必须一起加，否则 §1 会当场报「多：xxx」。
+ */
+const TEMPLATES = [
+  'title', 'chart', 'kinetic', 'whip', 'outro', 'wave', 'pulse', 'grid',
+  'quote', 'counter', 'compare',
+];
 
 /** 任务侧的 8 个场景模块 → 它们必须保持的段名。 */
 const TASK_SCENES = [
@@ -194,12 +201,12 @@ async function main() {
   /* ---------------- §1 登记 ---------------- */
   console.log('\n§1 镜头库的登记（SHOTS / listShots）');
   const keys = M.SHOTS && typeof M.SHOTS === 'object' && !Array.isArray(M.SHOTS) ? Object.keys(M.SHOTS) : null;
-  check('SHOTS 的键正好是这 8 个模板名', !!keys && sameSet(keys, TEMPLATES),
+  check(`SHOTS 的键正好是这 ${TEMPLATES.length} 个模板名`, !!keys && sameSet(keys, TEMPLATES),
     keys ? setDiff(keys, TEMPLATES) : `SHOTS 不是对象：${JSON.stringify(M.SHOTS)}`);
 
   const listed = typeof M.listShots === 'function' ? M.listShots() : null;
   const listedNames = Array.isArray(listed) ? listed.map((s) => s?.name) : null;
-  check('listShots() 返回数组，且名字正好是这 8 个', !!listedNames && sameSet(listedNames, TEMPLATES),
+  check(`listShots() 返回数组，且名字正好是这 ${TEMPLATES.length} 个`, !!listedNames && sameSet(listedNames, TEMPLATES),
     listedNames ? setDiff(listedNames, TEMPLATES) : `listShots() 返回的是 ${JSON.stringify(listed)}（不是数组）`);
 
   const notFn = keys ? keys.filter((k) => typeof M.SHOTS[k] !== 'function') : [];
@@ -207,7 +214,7 @@ async function main() {
     notFn.length ? `不是函数的：${notFn.join(', ')}` : 'SHOTS 是空的');
 
   const missingExports = TEMPLATES.filter((n) => typeof M[`${n}Shot`] !== 'function');
-  check('8 个具名导出都在（titleShot … gridShot）', missingExports.length === 0,
+  check('每个模板都有对应的具名导出（xxxShot）', missingExports.length === 0,
     `缺：${missingExports.map((n) => `${n}Shot`).join(', ')}`);
 
   /* ---------------- §2 文档与代码一致 ---------------- */
@@ -328,7 +335,7 @@ async function main() {
     if (a.err || b.err) notFresh.push(`${name}: 抛错（${a.err ?? b.err}）`);
     else if (a.scene === b.scene) notFresh.push(`${name}: 两次拿到同一个对象`);
   }
-  check('8 个模板各调两次都不是同一个对象', notFresh.length === 0,
+  check(`${TEMPLATES.length} 个模板各调两次都不是同一个对象`, notFresh.length === 0,
     `${notFresh.join('；')}（场景有自己的 this 状态，共享会串场：上一段 setup 的状态被下一段吃掉）`);
 
   /* ---------------- §5 id 覆盖 ---------------- */
@@ -338,7 +345,7 @@ async function main() {
     const r = callShot(name, { id: 'zzz' });
     if (r.err || r.scene?.id !== 'zzz') badOverride.push(`${name} → ${r.err ? `抛错（${r.err}）` : JSON.stringify(r.scene?.id)}`);
   }
-  check("shot(名字, { id: 'zzz' }).id === 'zzz'（8 个模板）", badOverride.length === 0, badOverride.join('；'));
+  check("shot(名字, { id: 'zzz' }).id === 'zzz'（每个模板）", badOverride.length === 0, badOverride.join('；'));
 
   const badDefault = [];
   for (const name of TEMPLATES) {
@@ -346,7 +353,7 @@ async function main() {
     const want = M.SHOTS?.[name]?.defaults?.id;
     if (r.err || r.scene?.id !== want) badDefault.push(`${name}: ${r.err ? `抛错（${r.err}）` : JSON.stringify(r.scene?.id)} ≠ defaults.id ${JSON.stringify(want)}`);
   }
-  check('不传 id 时 id === defaults.id（8 个模板）', badDefault.length === 0, badDefault.join('；'));
+  check('不传 id 时 id === defaults.id（每个模板）', badDefault.length === 0, badDefault.join('；'));
 
   /* ---------------- §6 报错路径 ---------------- */
   console.log('\n§6 报错路径（写错了必须响）');
@@ -374,7 +381,7 @@ async function main() {
   });
   check('未知参数的报错里列出可用参数（每项至少点名 2 个真实参数）',
     paramMsgs.length === TEMPLATES.length && thinList.length === 0,
-    thinList.length ? `这些模板的报错没列可用参数：${thinList.map(([n]) => n).join(', ')}` : `只有 ${paramMsgs.length}/8 个模板抛了错`);
+    thinList.length ? `这些模板的报错没列可用参数：${thinList.map(([n]) => n).join(', ')}` : `只有 ${paramMsgs.length}/${TEMPLATES.length} 个模板抛了错`);
 
   /* ---------------- §7 任务侧集成 ---------------- */
   console.log('\n§7 任务侧集成（场景模块的段名没变）');
@@ -389,7 +396,8 @@ async function main() {
   console.log('\n§8 静态扫描：镜头库源码里的非确定性写法');
   const shotsDir = path.join(ROOT, 'src/shots');
   const files = listJsFiles(shotsDir);
-  check('src/shots/ 下至少扫到 8 个 .js（扫描目标不是空的）', files.length >= 8,
+  check('src/shots/ 下至少扫到 ' + (TEMPLATES.length + 1) + ' 个 .js（每个模板一个文件 + index.js）',
+    files.length >= TEMPLATES.length + 1,
     `${shotsDir} 下只扫到 ${files.length} 个 .js（目录不存在？还是路径算错了？）`);
   check('index.js 在扫描范围内', files.some((f) => path.basename(f) === 'index.js'),
     `扫到的文件：${files.map((f) => path.relative(ROOT, f)).join(', ') || '（空）'}`);
@@ -440,6 +448,10 @@ async function main() {
       case 'number[]': return Array.isArray(v) && v.length > 0 && v.every((x) => Number.isFinite(x));
       case '[number, number]': return Array.isArray(v) && v.length === 2 && v.every((x) => Number.isFinite(x));
       case 'string[2]': return Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'string');
+      // 结构化参数（compare 的 rows: [{ label, a, b }]）：非空数组、每项是普通对象。
+      // ⚠ 这一条只浅查：深一层（row.a 到底是不是数字）由模板自己的 render 兜底
+      //   （compare.js 里 clamp(Number(row.a) || 0)）—— 类型声明不假装比代码知道得多。
+      case 'object[]': return Array.isArray(v) && v.length > 0 && v.every((x) => !!x && typeof x === 'object' && !Array.isArray(x));
       default: return false;
     }
   };
@@ -494,7 +506,7 @@ async function main() {
       }
     }
   }
-  check('8 个模板的 spec 都在，且与 defaults / meta.params / 场景对象逐项一致',
+  check(`${TEMPLATES.length} 个模板的 spec 都在，且与 defaults / meta.params / 场景对象逐项一致`,
     specProblems.length === 0, specProblems.slice(0, 6).join('\n            '));
 
   // 依赖声明本身：`wave` / `pulse` / `grid` 读 ctx.music（§14.3），这是 1-21 的**动机** ——
@@ -508,7 +520,7 @@ async function main() {
     `这些没有：${analyzeMiss.join(', ')}（没有预计算的 analysis.json 时引擎会退到浏览器里现算）`);
   const quiet = TEMPLATES.filter((n) => !MUSIC_SHOTS.includes(n));
   const noise = quiet.filter((n) => (M.SHOTS?.[n]?.spec?.requires ?? []).includes('music'));
-  check('另外 5 个模板不声明 music（多声明一条 = 用它的任务会被 check 假报"没配 audio"）', noise.length === 0,
+  check('另外 ' + (TEMPLATES.length - MUSIC_SHOTS.length) + ' 个模板不声明 music（多声明一条 = 用它的任务会被 check 假报"没配 audio"）', noise.length === 0,
     `这些多声明了：${noise.map((n) => `${n}${JSON.stringify(M.SHOTS?.[n]?.spec?.requires)}`).join(', ')}`);
   check("whip 声明了 requires: ['under']（它读上一段的成帧，§14.4）",
     (M.SHOTS?.whip?.spec?.requires ?? []).includes('under'),
@@ -554,7 +566,10 @@ async function main() {
     check("扫描认 shot('名字') 与 { type: '名字' }，且不吃注释里的举例",
       JSON.stringify(scanned.map((u) => u.shot)) === JSON.stringify(['pulse', 'chart']) && scanned[0].line === 3,
       `扫到的是 ${got}（期望 pulse@3 chart@4）`);
-    const unknownOnly = scanShotUsage([{ file: 'x', text: "shot('nope'); { type: 'quote' }" }], TEMPLATES);
+    // ⚠ 这里故意用一个**永远不存在**的名字（'quote2'）：原来用的是 'quote'，
+    //   而 2026-10-16 起 quote 已经是真模板 —— 夹具必须用真不存在的名字，否则这条判据会
+    //   随着"某个名字被做成模板"而无声失效（这次就是它红出来的）。
+    const unknownOnly = scanShotUsage([{ file: 'x', text: "shot('nope'); { type: 'quote2' }" }], TEMPLATES);
     check('未知模板名不在这里报（那是 timeline.js / shot() 的活，报两遍反而没人知道信哪条）',
       unknownOnly.length === 0, `扫到了 ${JSON.stringify(unknownOnly)}`);
 
@@ -621,8 +636,13 @@ async function main() {
       issues: [],
       facts: {},
     });
-    check("report：声明了但**没接线**的令牌（'under'）要明说「这次没有验它」（不许把没查说成「都满足」）",
-      repUnder.lines.some((l) => /还没接线/.test(l.text) && /'under'/.test(l.text))
+    // `under` 在 2026-10-16 接线了（BACKLOG 头部 ②），但**不在这两步里**：它是时间线层的依赖，
+    // 由段级审计（`src/timeline.js` 的 `auditUnderRequires()` → `__anim.underAudit()` → `cmdCheck`）
+    // 在展开之后判。所以这一条断的是**新的契约**：① 正文里不许再说"还没接线"（那是假话，
+    // 会把已经验过的说成没验）；② 要把它指到下面那一段去，并明说"那一段没出现就是没验"；
+    // ③ 它仍然不进 skipped / errors（分工问题，不是"这次没跑"，也不是任务作者的错）。
+    check("report：时间线层的令牌（'under'）要指到段级审计那一段，且不许说成「还没接线」",
+      repUnder.lines.some((l) => /'under'/.test(l.text) && /段级审计/.test(l.text) && !/还没接线/.test(l.text))
       && repUnder.lines.some((l) => /能查的那几条依赖都满足/.test(l.text))
       && repUnder.skipped.length === 0 && repUnder.errors.length === 0,
       JSON.stringify(repUnder.lines.map((l) => l.text)));
@@ -664,7 +684,8 @@ async function main() {
     // ⑤ 接线自检：cmdCheck 里真的调了它，而且 errs 真的并上了（1-19 的教训）
     const animSrc = readFileSync(path.join(ROOT, 'scripts', 'anim.mjs'), 'utf8');
     const start = animSrc.indexOf('async function cmdCheck(');
-    const end = animSrc.indexOf('/** 把若干时刻渲染成一张接触表', start);
+    // ⚠ 终点锚锚在函数定义上（别锚注释文本，见 tools/test-check-skipped.mjs 同名那条）
+    const end = animSrc.indexOf('async function writeContactSheet', start);
     const body = start > 0 && end > start ? animSrc.slice(start, end) : '';
     check('cmdCheck 里真的接了依赖前置校验（不是"函数写了没人调"）',
       /shotDependencyReport\(/.test(body) && /shotDependencyIssues\(/.test(body)

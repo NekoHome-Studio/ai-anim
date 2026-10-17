@@ -2,7 +2,7 @@
 
 > 这份文件回答一个具体问题：**要出一支片子，必须改源码吗？**
 >
-> **进度：A 档与 B 档都已落地。** A 档 = 参数化镜头库，见 `src/shots/`（8 个模板）与 `node scripts/anim.mjs shots`；
+> **进度：A 档与 B 档都已落地。** A 档 = 参数化镜头库，见 `src/shots/`（11 个模板）与 `node scripts/anim.mjs shots`；
 > B 档 = `task.config.mjs` 里直接写 `{ type: 'chart', ... }`，由 `build()` 查 `SHOTS` 表分发 ——
 > 一个任务可以**只有 `task.config.mjs`、没有 `scenes/`**（教程 `docs/CONFIG-ONLY.md`，完整示例 `tasks/example-config-only/`）。
 > **C 档（手写场景）不可替代**：模板覆盖不到的新视觉只能写代码，A/B 档的目的是把精力留给那几段。
@@ -46,8 +46,8 @@
 
 也就是说：
 
-- ✅ **一张 `shot(...)` 能做的**：8 个常见镜头（`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`）的全部画面，靠参数调数据与文案；参数名写错会**抛错**，不静默忽略。
-- ✅ **时间线里直接写 `{ type: 'chart', … }` 能做的（B 档）**：同样这 8 个模板，但**连 `scenes/*.js` 都不需要** —— 一个任务可以只有 `task.config.mjs`。`id` / `dur` 不写有默认值（`dur` 还能写 `{ beat }` / `{ bar }` / `{ vo }`），写错的地方一律抛错。
+- ✅ **一张 `shot(...)` 能做的**：11 个常见镜头（`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`）的全部画面，靠参数调数据与文案；参数名写错会**抛错**，不静默忽略。
+- ✅ **时间线里直接写 `{ type: 'chart', … }` 能做的（B 档）**：同样这 11 个模板，但**连 `scenes/*.js` 都不需要** —— 一个任务可以只有 `task.config.mjs`。`id` / `dur` 不写有默认值（`dur` 还能写 `{ beat }` / `{ bar }` / `{ vo }`），写错的地方一律抛错。
 - ✅ **只改配置能做的**：段落顺序、每段时长、段间重叠（转场）、参数传递、配色、帧率与分辨率、选哪段音乐、任务自带字体。
 - ❌ **仍然要写代码的**：模板覆盖不到的新视觉（raymarch 晶格、燃烧的引线…）—— 这是 C 档，不可替代。
 
@@ -73,7 +73,7 @@ export default shot('chart', { values: [0.3, 0.7, 0.95], title: '这一轮的成
 
 ### A 档 · 镜头库 ✅ 已落地
 
-`src/shots/` 已经是仓库里的一层，**8 个模板**：`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`。
+`src/shots/` 已经是仓库里的一层，**11 个模板**：`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`。
 场景文件退化成「取模板 + 给参数」一行：
 
 ```js
@@ -141,7 +141,7 @@ export default {
   **数组里只要有一个配置档节点 → 也走 `build()`**；纯数组、里面全是已经展开好的段 → 保持旧行为，不经过 `build()`。
 - **混写会抛错**：同一条时间线里「配置档节点」和「已经展开好的段」（带 `start`/`end` 的那种）不能共存 ——
   后者会被重新排一遍、绝对时间被静默丢掉，所以 `build()` 直接报错，而不是悄悄排错。
-- **模板**：8 个（`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`）；
+- **模板**：11 个（`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid` `quote` `counter` `compare`）；
   `wave` / `pulse` / `grid` **需要音乐**（配 `audio` + 先跑 `analyze`）；`whip` 自带 `handlesTransition: true`（转场，要给它 `overlap`）。
   查参数：`node scripts/anim.mjs shots` / `node scripts/anim.mjs shots <名字>`。
 - **教程与示例**：`docs/CONFIG-ONLY.md`（教程）+ `tasks/example-config-only/`（只有 `task.config.mjs` 的完整示例）。
@@ -149,7 +149,7 @@ export default {
   `node scripts/anim.mjs check example-config-only`、`node scripts/anim.mjs still example-config-only -t …`、
   `node scripts/anim.mjs video example-config-only`；离线那一层是 `node tools/test-timeline-guard.mjs`（纯 JS，不需要 GPU）。
   判据就是 §3 第 2 条那句：**新建一个任务、只编辑 `task.config.mjs`，能出完整 mp4**。
-- **风险**：`type` 名字（8 个模板名）与它们的参数名现在就是公开 API；**加模板安全，改模板名/参数名要当破坏性变更处理**。
+- **风险**：`type` 名字（11 个模板名）与它们的参数名现在就是公开 API；**加模板安全，改模板名/参数名要当破坏性变更处理**。
 - **不建议**：为了「纯配置」把参数做成大而全的万能 schema。镜头模板应该**少而专**，需要新视觉时回到 C 档写代码，而不是把模板撑成 DSL。
 
 ### C 档 · 手写场景（不可替代）
@@ -160,7 +160,7 @@ export default {
 
 ## 3. 推荐的实施顺序
 
-1. ✅ **抽 A 档镜头库** —— 已落地：`src/shots/`，8 个模板（`title` `chart` `kinetic` `whip` `outro` `wave` `pulse` `grid`），
+1. ✅ **抽 A 档镜头库** —— 已落地：`src/shots/`（第七轮 8 个模板；2026-10-16 的 0-5 又加了 `quote` / `counter` / `compare`），
    绘制代码从两个示例任务的既有场景**逐字搬运**。
    - 验收（机械判据，不是"看着一样"）：`node scripts/anim.mjs hashes demo --baseline` 与 `hashes beat --baseline`，
      没有任何像素差超过 16/255，且平均差 < 0.002。
@@ -186,7 +186,7 @@ export default {
 > A/B 档的目的是把精力省下来给那几段，不是让整支片子长得像模板。
 
 - **首选：直接写配置（B 档）**。时间线里写 `{ type: '名字', … }`，**只编辑 `task.config.mjs`**，不需要 `scenes/`；
-  8 个模板里挑一个，参数看 `node scripts/anim.mjs shots <名字>`，照抄 `tasks/example-config-only/`，
+  11 个模板里挑一个，参数看 `node scripts/anim.mjs shots <名字>`，照抄 `tasks/example-config-only/`，
   教程见 `docs/CONFIG-ONLY.md`。
 - **第二选择：复制最近的示例场景再改参数**（模板覆盖不到的视觉要走这条路）。`tasks/demo/scenes/chart.js` 这类文件现在只有 13 行
   （其中 6 行是数据数组），而且它调的就是引擎模板——真正要参考的是**参数怎么填**，或者照 `AGENTS.md` §3 的接口手写。

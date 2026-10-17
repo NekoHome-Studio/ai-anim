@@ -22,6 +22,7 @@
  *   §5 退出码三档：1 / 0 / 2（`--json` 恒 0）
  *   §6 机器可读输出（`--json` 的契约：调用方靠它决定怎么办）
  *   §7 源码自检（防"判据被改宽/改窄"而测试还绿着）
+ *   §8 判据 ③（算出来的显示位）：正例必须响、反例必须静、条数钉死、零处有一行、不进退出码
  */
 
 import { spawnSync } from 'node:child_process';
@@ -209,16 +210,17 @@ console.log('\n§6 --json：机器可读的契约（调用方靠它决定怎么�
 {
   const { json } = runJson([`--dir`, FIXTURES, '--max', '0']);
   eq('tool 名字', json.tool, 'lint-fabricated-numbers');
-  eq('summary.tasks == 3（三个有事实表的夹具）', json.summary.tasks, 3);
-  eq('summary.unmatched == 4（正例 1 + 混合 3）', json.summary.unmatched, 4);
-  eq('summary.slots == 5（正例 1 + 混合 4）', json.summary.slots, 5);
+  eq('summary.tasks == 4（四个有事实表的夹具）', json.summary.tasks, 4);
+  eq('summary.unmatched == 4（正例 1 + 混合 3；算出来的那个夹具零命中）', json.summary.unmatched, 4);
+  eq('summary.slots == 7（正例 1 + 混合 4 + 算出来的夹具 2）', json.summary.slots, 7);
+  eq('summary.computed == 12（算出来的夹具 9 + 反例 3）', json.summary.computed, 12);
   eq('summary.skipped == 1（没验的那一个）', json.summary.skipped, 1);
   eq('skipped 里点了名与原因', JSON.stringify(json.skipped), JSON.stringify([{ name: 'zz-no-facts', reason: '没有 FACTS.md' }]));
 
   const pos = taskOf('zz-fake-positive');
   const neg = taskOf('zz-fake-negative');
   const mix = taskOf('zz-fake-mixed');
-  ok('三个有事实表的夹具都在', !!pos && !!neg && !!mix);
+  ok('四个有事实表的夹具都在', !!pos && !!neg && !!mix && !!taskOf('zz-fake-computed'));
   eq('正例 slotCount == 1', pos.slotCount, 1);
   eq('反例 slotCount == 0', neg.slotCount, 0);
   eq('混合 slotCount == 4', mix.slotCount, 4);
@@ -277,8 +279,103 @@ console.log('\n§7 源码自检：判据、文案与"空 ≠ 干净"的措辞都
   has('路径归一化：仓库内一律相对仓库根', src, 'const relOf = (p) =>');
   ok('报告路径里不会再出现 "../"', !all.out.includes('../'), all.out.slice(0, 200));
   hasNot('报告路径里不会再出现 out/_staging', all.out, 'out/_staging');
+
+  // ⑥ 判据 ③（算出来的显示位）：实现、文案与「不进退出码」的边界都还在
+  has('判据 ③ 的实现还在（删了就会静默漏检）', src, 'function collectComputed(');
+  has('判据 ③ 的成因标签表还在', src, 'const COMPUTED_KIND = {');
+  has('判据 ③ 单独那一段的文案（DIAGNOSIS 要按原句登记）', src, '算出来的值：');
+  has('零处也要打一行（措辞在源码里）', src, '算出来的值：0 处');
+  has('判据 ③ 明说「这一项没验」', src, '这些位置静态查不到等于几，这一项**没验**');
+  has('没有事实表的任务也扫判据 ③（不看事实表）', src, '判据 ③ 只读源码');
+  has('判据 ③ 的退出码边界写在文件头（不许把它接进退出码）', src, '判据 ③（算出来的显示位）**不进退出码**');
+  ok('退出码仍然只由 unmatched 决定（computed 不许参与）',
+    !/process\.exit\([^)]*[Cc]omputed/.test(src), (src.match(/process\.exit\([^)]*\)/g) ?? []).join(' '));
+  has('--help 里写了判据 ③', run(['--help']).out, '判据 ③');
+  has('--help 里也写了它的边界（不改退出码 / 0 处也打一行）', run(['--help']).out, '0 处也打一行');
 }
 
+/* ══════════════════════════════════════ §8 判据 ③（算出来的显示位） */
+
+console.log('\n§8 判据 ③：算出来的显示位必须单独列出来、明说「没验」，且不进退出码\n');
+{
+  // ── 条数钉死：谁放宽 / 收紧判据 ③，这里当场红 ──
+  const comp = taskOf('zz-fake-computed');
+  eq('算出来的夹具：判据 ③ == 9 处（钉死）', comp.computedCount, 9);
+  eq('算出来的夹具：--max 0 时数组也是 9 条', comp.computed.length, 9);
+  eq('反例：判据 ③ == 3 处（那三行本来就是算出来的）', taskOf('zz-fake-negative').computedCount, 3);
+  eq('正例：判据 ③ == 0 处（纯字面量不许被算成「算出来的」）', taskOf('zz-fake-positive').computedCount, 0);
+  eq('混合：判据 ③ == 0 处（同上）', taskOf('zz-fake-mixed').computedCount, 0);
+
+  // ── 正例必须响：位置 + 成因逐条钉死（顺序 = 源码顺序） ──
+  const shape = comp.computed.map((c) => `${c.at.replace(/^.*\//, '')} 〔${c.kind}〕`);
+  eq('九处的位置与成因逐条钉死', JSON.stringify(shape), JSON.stringify([
+    'computed.js:23 〔模板串插值〕',
+    'computed.js:25 〔包了 .padStart()〕',
+    'computed.js:27 〔字符串拼接〕',
+    'computed.js:29 〔包了 .toFixed()〕',
+    'computed.js:31 〔字符串拼接〕',
+    'computed.js:33 〔模板串插值〕',
+    'task.config.mjs:25 〔模板串插值〕',
+    'task.config.mjs:27 〔values 里是变量 / 表达式〕',
+    'task.config.mjs:27 〔values 里是变量 / 表达式〕',
+  ]));
+  eq('每一条都带 at / kind / role / snippet / code（人能照着改）',
+    JSON.stringify(Object.keys(comp.computed[0])), JSON.stringify(['at', 'kind', 'role', 'snippet', 'code']));
+  has('片段给的是那一段表达式（同一行两个 values 元素靠它分辨）',
+    JSON.stringify(comp.computed.map((c) => c.snippet)), 'SERIES[0] + 0.1');
+  has('同一行的另一个 values 元素也各自成条', JSON.stringify(comp.computed.map((c) => c.snippet)), 'trend(2)');
+  has('role 说清了它算哪一类显示位（选项键 / 包装函数 / 流向）',
+    JSON.stringify(comp.computed.map((c) => c.role)), '流向文字入口的包装函数 tag');
+
+  // ── 反例必须静：values 里的字面量、纯字面量的那几行都不许进来 ──
+  ok('values 里那个字面量 0.7 没被算成「算出来的」',
+    !comp.computed.some((c) => c.snippet === '0.7'), JSON.stringify(comp.computed.map((c) => c.snippet)));
+  eq('反例里被点名的只有那三行（纯字面量那几行一个都没进来）',
+    JSON.stringify(taskOf('zz-fake-negative').computed.map((c) => c.at.replace(/^.*task\.config\.mjs:/, ''))),
+    JSON.stringify(['45', '46', '47']));
+
+  // ── 人看的报告：单独一段 + 逐条 file:line + 那一行原文 ──
+  const compOut = run([`--dir`, FIXTURES, 'zz-fake-computed', '--max', '0']);
+  eq('算出来的夹具单独跑 ⇒ 退出码 0（判据 ③ 不染色）', compOut.code, 0);
+  has('报告里单独一段「算出来的值：9 处」并明说没验', compOut.out,
+    '算出来的值：9 处 —— 这些位置静态查不到等于几，这一项**没验**（判据 ③）');
+  has('逐条给 file:line', compOut.out, 'scenes/computed.js:23');
+  has('并给出成因标签', compOut.out, '〔包了 .padStart() · 文字入口 put()〕');
+  has('下面还附那一行原文', compOut.out, 'put(type, String(1 + 1).padStart(2, \'0\'), 120, 460, { size: 30 });');
+  ok('判据 ③ 的条目没有混进「找不到出处」的明细（没有 原样：）',
+    !compOut.out.includes('原样：'), compOut.out.slice(0, 300));
+  has('那一行源码里确实写着 padStart（不是我们凭空报的）', compOut.out, 'padStart(2,');
+
+  // ── 零处也要有一行（否则「没扫到」和「这段没执行」分不开） ──
+  const posOut = run([`--dir`, FIXTURES, 'zz-fake-positive', '--max', '0']);
+  has('零处也打一行', posOut.out, '算出来的值：0 处');
+  has('零处那一行同时声明「这一段扫过了」与「没验」', posOut.out,
+    '算出来的值：0 处 —— 这一段扫过了；这一类静态查不到等于几，真出现时会被列在这里 ⇒ **这一项没验**（判据 ③）');
+  ok('整目录跑时 0 处的那一行不止一处（正例与混合各一行）',
+    all.out.split('算出来的值：0 处').length - 1 >= 2, String(all.out.split('算出来的值：0 处').length - 1));
+
+  // ── `--max` 只截断明细，不改判据 ③ 的条数、不改退出码 ──
+  const compMax1 = run([`--dir`, FIXTURES, 'zz-fake-computed', '--max', '1']);
+  has('--max 1：那一行仍报总条数 9', compMax1.out, '算出来的值：9 处');
+  has('--max 1：截断行说明还有几处', compMax1.out, '…… 另有 8 处（--max 0 看全部）');
+  eq('--max 1：退出码仍 0（截断的是显示，不是判据）', compMax1.code, 0);
+
+  // ── 没有事实表的任务：字面量那一项安静跳过，判据 ③ 照扫、计数照常输出 ──
+  const noFactsOut = run([`--dir`, FIXTURES, 'zz-no-facts']);
+  eq('无事实表的任务仍不改变退出码', noFactsOut.code, 0);
+  ok('无事实表的任务仍然安静跳过（没有 ❌）', !noFactsOut.out.includes('❌'), noFactsOut.out.slice(0, 300));
+  has('判据 ③ 那一段照常输出（点名了是哪个任务）', noFactsOut.out, 'zz-no-facts  算出来的值：0 处');
+  eq('JSON 里 skippedComputed 记着它',
+    JSON.stringify(allJson.skippedComputed),
+    JSON.stringify([{ name: 'zz-no-facts', computedCount: 0, computed: [] }]));
+  eq('老字段 skipped 的形状没变（下游读法不受影响）',
+    JSON.stringify(allJson.skipped), JSON.stringify([{ name: 'zz-no-facts', reason: '没有 FACTS.md' }]));
+
+  // ── 退出码三档不变 ──
+  eq('整目录：仍是 1（那 4 个找不到出处的字面量，判据 ③ 不参与）', all.code, 1);
+  eq('干净 ⇒ 0（反例那 3 处算出来的值没有把它染红）', run([`--dir`, FIXTURES, 'zz-fake-negative']).code, 0);
+  eq('任务名写错 ⇒ 2（判据 ③ 不改这一档）', run([`--dir`, FIXTURES, 'no-such-task']).code, 2);
+}
 /* ══════════════════════════════════════ 汇总 */
 
 console.log(`\n${fail ? '✗' : '✓'} ${pass} 项通过${fail ? `，${fail} 项失败：${failures.join(' / ')}` : ''}\n`);

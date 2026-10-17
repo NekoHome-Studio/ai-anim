@@ -1,6 +1,6 @@
 // P0-1 回归测试：**ffmpeg 背压不能被误判成「渲染停滞」**，产物必须完整。
 //
-// 背景（docs/IMPROVEMENTS.md P0-1，本轮最贵的一个坑）：
+// 背景（docs/history/IMPROVEMENTS-1-3.md P0-1，本轮最贵的一个坑）：
 //   CLI 用「停发 ack」做背压 —— ffmpeg 一慢，`stdin.write()` 返回 false，我们就不回 ack，
 //   页面（发一帧等一个 ack）自然停下来等。可旧看门狗的续命判据是「页面侧的 sent 在涨」，
 //   而页面**正在等 ack**，sent 当然不涨 → 判「停滞」→ 收工 → `stdin.end()` →

@@ -14,7 +14,7 @@
  * 等宽、字就歪，观众要花力气去"读"而不是"看懂"。平面的东西用这一层画，只在需要表示
  * "它属于那个世界"时才从世界里引一条细线过来（`arrowH` 就是干这个的）。
  *
- * ## 视觉规律：**alpha 管在不在，tone 管亮不亮**（`docs/IMPROVEMENTS-4.md` §4.3）
+ * ## 视觉规律：**alpha 管在不在，tone 管亮不亮**（`docs/history/IMPROVEMENTS-4-5.md` §4.3）
  *
  * `LineBatch` 画的是胶囊，**没有深度测试**。面板的"填充"是 `fillRect` 一排横线拼出来的，
  * 只要 `alpha < 1`，排线之间那道发丝缝就会把**后面的东西**透出来（世界里的亮边会从面板上
@@ -42,7 +42,7 @@
  *
  * 文字一律走 `type.writeLine`（`type.write` 的 `align` 是**逐字**生效的，做不了整行居中）；
  * 颜色一律 `css(P.xxx, a)` —— **不是** `css(colorObjectWithAlpha)`（`css()` 只读前三个分量，
- * 第 4 个会被静默丢掉，`docs/IMPROVEMENTS-4.md` §2）。
+ * 第 4 个会被静默丢掉，`docs/history/IMPROVEMENTS-4-5.md` §2）。
  */
 
 import { clamp, sat, lerp, smoothstep, css as cssOf, hash1 } from '../core/util.js';
@@ -54,7 +54,7 @@ import { clamp, sat, lerp, smoothstep, css as cssOf, hash1 } from '../core/util.
  *
  * 为什么专门写一个 `col`：任务侧的惯用写法是「`col(P, name, a)` 返回四元组，直接喂给
  * `lines`」，但那个四元组一旦递给 `css()`，第 4 个分量就被静默丢掉了
- * （`docs/IMPROVEMENTS-4.md` §2，本轮 13 处文字淡入全部失效就是这个）。这里的取法是
+ * （`docs/history/IMPROVEMENTS-4-5.md` §2，本轮 13 处文字淡入全部失效就是这个）。这里的取法是
  * **反过来**的：`col()` 只出三元组，alpha 一律由调用方显式给（`withAlpha(col, a)` 或
  * `css(P.xxx, a)`），于是"丢 alpha"这件事在类型上就发生不了。
  *

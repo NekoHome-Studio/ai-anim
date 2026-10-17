@@ -392,7 +392,7 @@ export class GL {
     /**
      * GPU 信息**一处采集**，`check` / `gpu` / 页面 HUD 都用它。
      *
-     * 为什么（`docs/IMPROVEMENTS-2.md` P2-4）：`check` 过去只打 `RENDERER`，
+     * 为什么（`docs/history/IMPROVEMENTS-1-3.md` P2-4）：`check` 过去只打 `RENDERER`，
      * 拿不到 unmasked 串时就是一句 `WebKit WebGL`；而同机的 `anim gpu` 走的是
      * 另一条路径（自己新建一个 canvas + 拿 `WEBGL_debug_renderer_info`），
      * 能拿到 `ANGLE (AMD, AMD Radeon(TM) Graphics …, D3D11)`。
@@ -416,7 +416,8 @@ export class GL {
     /**
      * 本帧的绘制记账（见 `_notePaint`）。引擎在每段场景 render 之前会重置它，
      * 用来回答「这一段到底往画面里画了东西没有」——「什么都没画」以前是抓不到的。
-     * @type {{ full: number, any: number, lines: number, target: any, other: number }|null}
+     * @type {{ full: number, any: number, lines: number, text: number, target: any, other: number,
+     *          layer: any, blocks: any[], markError?: boolean }|null}
      */
     this.paint = null;
   }
@@ -500,7 +501,7 @@ export class GL {
    *
    * 为什么要它：**「这一段其实什么都没画」是抓不到的** —— 画面看上去有 grain 和暗角，
    * 亮度统计也远超"全黑"阈值，而底其实是一块纯黑（做 fidus 时 9 段里 8 段这样，
-   * 见 docs/IMPROVEMENTS.md P0-2）。这里按「实际发生的绘制」记账，
+   * 见 docs/history/IMPROVEMENTS-1-3.md P0-2）。这里按「实际发生的绘制」记账，
    * 再和「后处理只动过多少像素」比，就能机械地判出来。
    *
    * ⚠ `blend` 必须由**调用方**明确给出（Pass 知道自己设了什么混合），
@@ -519,6 +520,27 @@ export class GL {
     if (!blend && !opts.noFull) this.paint.full++;
     this.paint.any++;
     if (this.paint.target && this.paint.target !== target) this.paint.other++;
+  }
+
+  /**
+   * 开一本新的绘制账（"这一段到底画了什么"）。`layer` = 这一段自己的 2D 图层 ——
+   * **版面守门只认画在这一层上的文字**（`src/layout.js` / `docs/LAYOUT.md`），
+   * 引擎的字幕层与 HUD 层画在别的图层上，天然不算进去。
+   *
+   * ⚠ `paint.layer` 存的是这一层的**排版工具**（`layer.type`，TextKit），不是 Layer2D 本身：
+   *   记账发生在 `TextKit.write()` 里，它手里只有自己（`src/core/text.js` 的 noteText 比的是
+   *   `paint.layer === this`）。第一版存的是 Layer2D，判据恒假、`blocks` 永远是空的，
+   *   而且不报错 —— 靠一个探针才查出来（2026-10-16）。
+   * @param {any} target @param {any} [layer]
+   */
+  beginPaint(target = null, layer = null) {
+    const p = {
+      full: 0, any: 0, lines: 0, text: 0,
+      target, other: 0, layer: layer?.type ?? layer ?? null,
+      blocks: [], markError: false,
+    };
+    this.paint = p;
+    return p;
   }
 
   /** 清屏（线性色）。 */
@@ -826,6 +848,12 @@ export class Layer2D {
      * 场景画字就会画到别的画布上去（踩过：文字全部凭空消失）。
      */
     this.type = new TextKit(this.ctx);
+    /**
+     * 把这一层所属的 GL 转给排版工具 —— **版面守门靠它记账**（`src/core/text.js` 的 noteText
+     * 要读 `gl.paint`：这一帧画在**哪一层**、画了几块字）。以前 TextKit 上没有这个字段，
+     * 判据恒假、`paint.blocks` 永远是空的（而且不报错）—— 2026-10-16 用探针查出来的。
+     */
+    this.type.gl = gl;
     this.resize(gl.scale);
     const g = gl.ctx;
     this.tex = g.createTexture();
@@ -897,6 +925,12 @@ export class Layer2D {
     return this;
   }
   get texHandle() { return this.tex; }
+  /**
+   * **这一层自己的排版工具**（= `this.type`）。暴露给版面守门用：
+   * 文字宽度必须在**同一个 TextKit 实例**上量（字体栈/字距缓存都在实例里），
+   * 拿别的实例量出来的宽度会差一截（`src/layout.js` 的判据依赖它）。
+   */
+  get typekit() { return this.type; }
   dispose() { this.gl.ctx.deleteTexture(this.tex); }
 }
 

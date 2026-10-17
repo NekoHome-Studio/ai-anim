@@ -55,25 +55,30 @@ const ITEMS = [
   { name: 'unit:cam-math', cmd: ['tools/test-cam-math.mjs'], note: '3D 相机/投影/透视变换 + **手性**（33 项）' },
   { name: 'unit:segment-cuts', cmd: ['tools/test-segment-cuts.mjs'], note: 'P2-4 分块切点只落在安全处' },
   { name: 'unit:shots', cmd: ['tools/test-shots.mjs'], note: 'A 档镜头库：模板登记/参数名/任务段名（写错就响）' },
-  // 风格 / 字幕 / 版面（docs/IMPROVEMENTS-5.md）：全部纯 JS，毫秒级。
+  // 风格 / 字幕 / 版面（docs/history/IMPROVEMENTS-4-5.md）：全部纯 JS，毫秒级。
   // ⚠ **不把 `lint-narration-dup` 放进清单**：已交付的 sodium / optifine 必然命中（12 / 3 句），
   //   放进来会让回归清单永久变红，反而没人看了。它是「交付前自检」（AGENTS.md §10.9）
   //   与 `check` 的警告项（见 scripts/anim.mjs 里那段的注释）。
   { name: 'unit:style', cmd: ['tools/test-style.mjs'], note: '风格包 + 字幕层：合并规则 / 默认值一致 / "不写 style 时零变化"的底线（54 项）' },
   { name: 'unit:blocks', cmd: ['tools/test-blocks.mjs'], note: '方块世界 kit：面朝向判据 / 深度排序 / 世界切片 / 摄影机关键帧' },
   { name: 'unit:check-skipped', cmd: ['tools/test-check-skipped.mjs'], note: '1-19「空≠干净」：skipped 收集/聚合/结论行 + --quick 分档 + 接线自检（25 项）' },
+  { name: 'unit:timeline-audit', cmd: ['tools/test-timeline-audit.mjs'], note: '段级审计（纯函数）：under 的 missing / 第 1 段不判 / 与引擎同口径；背景守门采两个时刻 + world:false 分流 + 判定只落在窗中点（钉住 demo 那个假报）；+ 接线自检（26 项）' },
+  { name: 'unit:layout', cmd: ['tools/test-layout.mjs'], note: '版面守门（纯函数，第十一轮）：块合并随字号缩放 / 主体图连通 / 母题保留区豁免 / 没声明 focus = 没判 / layoutReport 平铺一层（钉住那次 undefined）/ 接线自检（31 项）' },
+  { name: 'unit:motion', cmd: ['tools/test-motion.mjs'], note: '运动规则（纯函数，BACKLOG 1-27）：nudgeCurve 的端点/单调/10-65-25 距离分配 + 两处接缝速度相等（这条是【我方推导】，数值本身是外部经验值）/ waterfallStagger 的四个边界（远小于、正好等于、超过、items=0）/ glowPeakCap 正反例 + NaN 不许静默通过 / motion.js 无 Math.random 也无 GPU import 的静态扫描 / kit 再导出与回归清单接线自检（42 项）' },
   { name: 'unit:notes', cmd: ['tools/test-notes.mjs'], note: '1-29 后半：NOTES.json 的读写/校验纯函数 + clean 保护判据（57 项）' },
   // ⚠ **不是 gate**（与 lint-narration-dup 同一个前例，见上面那段注释）：现在 6 个有事实表的任务里
   //   3 个必然命中（nekohome 5 / promo 4 / fidus 1，全是没登记的镜号），当 gate 会让清单永久变红。
   //   这一项只断言**工具自身可用**（正例响 / 反例静 / 条数钉死 / 空≠干净 / 退出码三档），
   //   不会因为片子内容而红。夹具在 `tools/fixtures/lint-numbers/`。
-  { name: 'unit:lint-numbers', cmd: ['tools/test-fabricated-numbers.mjs'], note: '1-22 画面数字必须有出处：正例必须响 / 反例必须静 / 显示位条数钉死 / 空≠干净 / 退出码三档（139 项）' },
+  { name: 'unit:lint-numbers', cmd: ['tools/test-fabricated-numbers.mjs'], note: '1-22 画面数字必须有出处：正例必须响 / 反例必须静 / 显示位条数钉死 / 空≠干净 / 退出码三档 + 「算出来的值」（判据 ③）单列且明说没验（183 项）' },
   { name: 'harness:demo', cmd: ['tools/scene-harness.mjs', 'demo'], note: '离线跑场（假 ctx，不起 Chrome，0.1s）：未定义变量 / 确定性 / 文字出画' },
   { name: 'harness:style-sampler', cmd: ['tools/scene-harness.mjs', '_style-sampler'], note: '风格采样器：配置档 4 段 + 风格解析走通' },
 
   // ── Node 侧整条链（合成/摆位/闪避；不需要 GPU，但要 ffmpeg）──
   { name: 'say:offline', cmd: ['tools/test-say.mjs'], note: 'B 档 anim say + anim mix 全链路（stub 驱动，30 项）', timeout: 10 * 60e3 },
-  { name: 'say:real-tts', cmd: ['tools/probe-tts-edge.mjs'], note: 'B/C 档真 TTS（联网；连不上会「跳过」退出码 2）', timeout: 10 * 60e3 },
+  { name: 'say:real-tts', cmd: ['tools/probe-tts-edge.mjs'], allowSkip: true, note: 'B/C 档真 TTS（联网；连不上会「跳过」退出码 2 —— 服务端 403 也算这一类）', timeout: 10 * 60e3 },
+  // ⚠ 这一项**会**在没有 ffmpeg 的机器上退出 2（"跳过，不算通过"）—— 所以挂 allowSkip
+  { name: 'unit:loudness', cmd: ['tools/test-loudness.mjs'], allowSkip: true, note: '响度数字守门：合成已知响度的测试音、对不上就是函数错了 + **-t 是输入侧选项**与"真的截断"（39 项）' },
 
   // ── 注入式回归（会临时改文件；必须串行）──
   { name: 'smoke:scene-error', cmd: ['tools/smoke-scene-error.mjs'], note: 'P0-3 场景抛错 = 硬失败（10 项）', timeout: 20 * 60e3 },
@@ -117,7 +122,7 @@ const ITEMS = [
   { name: 'probe:trans2', cmd: ['tools/probe-trans2.mjs', '_calib'], note: '转场：推走而不是糊在一起（第四轮重写了判据）', timeout: 20 * 60e3 },
   { name: 'probe:determinism', cmd: ['tools/probe-determinism.mjs', 'beat', '1', '2'], note: 'P1-2 更正：帧起点口径逐字节相同', timeout: 30 * 60e3 },
   { name: 'test:parallel', cmd: ['tools/test-parallel.mjs', 'demo', '6'], note: 'P2-1 并行渲染 6 项', timeout: 40 * 60e3 },
-  // 抖动守门：`docs/IMPROVEMENTS-3.md` 那次事故（用户"最后像地震"）的回归项。
+  // 抖动守门：`docs/history/IMPROVEMENTS-1-3.md` 那次事故（用户"最后像地震"）的回归项。
   // 整片要跑 2880 帧、raymarch 段 170ms/帧（几分钟），所以只体检收尾 8 秒 —— 事故就出在那里
   // （摄影机停住了、幅度却只升不降）。判据与 `video` 收尾的守门共用 scripts/lib/shake.mjs。
   { name: 'shake:promo', cmd: ['scripts/anim.mjs', 'shake', 'promo', '--from', '40', '--to', '48'], note: '抖动：收尾段必须是平滑手持而不是逐帧白噪声（480 帧，约 35s）', timeout: 20 * 60e3 },
@@ -144,7 +149,16 @@ function runItem(it) {
   writeFileSync(log, body);
   const code = r.status;
   const pass = code === 0;
-  return { ...it, code, pass, ms, log: path.relative(ROOT, log), out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  /**
+   * **"跳过"是第三种结局**（2026-10-16 加，BACKLOG 头部 ⑧ 那一轮带出来的）：
+   * 有些项在**环境不满足**时会按约定用**退出码 2** 明说"我没跑"（真 TTS 连不上、
+   * 没有 ffmpeg……）—— 那是"没验"，既不是通过、也不该记成"失败"。
+   * ⚠ 只对显式声明 `allowSkip: true` 的项生效：别的工具里退出码 2 是**用法错**（真失败），
+   *   不能一刀切（`lint-narration-dup` / `png-rows` / `test-fabricated-numbers` 都是那样）。
+   * ⚠ 跳过**不算通过**：汇总里单独列，并写明"跳过 ≠ 通过"。
+   */
+  const skip = !!it.allowSkip && code === 2;
+  return { ...it, code, pass, skip, ms, log: path.relative(ROOT, log), out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
 /** 从输出里挑一行最像"结论/错误"的，汇总表里显示。 */
@@ -173,28 +187,31 @@ for (const it of list) {
   process.stdout.write(`· ${it.name.padEnd(24)} 跑 … `);
   const res = runItem(it);
   results.push(res);
-  const tag = res.pass ? 'PASS' : (it.expectFail ? 'FAIL(已知)' : 'FAIL');
+  const tag = res.pass ? 'PASS' : (res.skip ? 'SKIP(没跑)' : (it.expectFail ? 'FAIL(已知)' : 'FAIL'));
   console.log(`${tag}  ${(res.ms / 1000).toFixed(1)}s`);
   if (!res.pass) console.log(`    ${headline(res)}`);
 }
 
-const failed = results.filter((r) => !r.pass && !r.expectFail);
-const known = results.filter((r) => !r.pass && r.expectFail);
+const failed = results.filter((r) => !r.pass && !r.skip && !r.expectFail);
+const known = results.filter((r) => !r.pass && !r.skip && r.expectFail);
+const skipped = results.filter((r) => r.skip);
 console.log(`\n${'─'.repeat(72)}`);
 console.log(`通过 ${results.filter((r) => r.pass).length}/${results.length}`
+  + (skipped.length ? `　**跳过 ${skipped.length} 项（没跑 ≠ 通过）**：${skipped.map((k) => k.name).join(', ')}` : '')
   + (known.length ? `　已知失败 ${known.length}（${known.map((k) => k.name).join(', ')}）` : '')
   + (failed.length ? `　❌ 真失败 ${failed.length}` : '　✅ 没有真失败'));
+for (const s of skipped) console.log(`  ⏭ ${s.name}  (exit 2：环境不满足，这一项**没验**)  → ${s.log}`);
 for (const f of failed) console.log(`  ❌ ${f.name}  (exit ${f.code})  → ${f.log}\n     ${headline(f)}`);
 
 const summary = {
   at: new Date().toISOString(),
-  results: results.map((r) => ({ name: r.name, code: r.code, pass: r.pass, expectFail: !!r.expectFail, ms: r.ms, log: r.log, headline: headline(r) })),
+  results: results.map((r) => ({ name: r.name, code: r.code, pass: r.pass, skip: !!r.skip, expectFail: !!r.expectFail, ms: r.ms, log: r.log, headline: headline(r) })),
 };
 writeFileSync(path.join(LOGDIR, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
 writeFileSync(
   path.join(LOGDIR, 'summary.md'),
   `# 回归汇总 ${summary.at}\n\n| 项 | 结果 | 用时 | 结论 |\n|---|---|---|---|\n`
-  + results.map((r) => `| ${r.name} | ${r.pass ? '✅' : (r.expectFail ? '🟡 已知失败' : '❌')} | ${(r.ms / 1000).toFixed(1)}s | ${headline(r).replace(/\|/g, '\\|')} |`).join('\n')
+  + results.map((r) => `| ${r.name} | ${r.pass ? '✅' : (r.skip ? '⏭ 跳过（没验）' : (r.expectFail ? '🟡 已知失败' : '❌'))} | ${(r.ms / 1000).toFixed(1)}s | ${headline(r).replace(/\|/g, '\\|')} |`).join('\n')
   + '\n',
 );
 console.log(`\n汇总：out/_regress/summary.md`);

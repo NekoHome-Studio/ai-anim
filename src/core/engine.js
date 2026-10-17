@@ -106,7 +106,7 @@ export class Engine {
      * **场景 render 抛的异常**，结构化记着（段名 / 时刻 / 帧号 / 栈）。
      *
      * 与 `errors`（字符串，人看）分开的原因：CLI 要拿它做**机器判据** ——
-     * `check` 必须失败、`video` 必须不出片（`docs/IMPROVEMENTS-2.md` P0-3）。
+     * `check` 必须失败、`video` 必须不出片（`docs/history/IMPROVEMENTS-1-3.md` P0-3）。
      * 去重交给 `app.js` / CLI 那侧做（同一段每帧都抛，这里如实全记）。
      * @type {{ id: string, t: number, idx: number, message: string, stack: string }[]}
      */
@@ -405,6 +405,15 @@ export class Engine {
       style: this.style,
       /** 风格栅格（已按分辨率缩放）：kit 元件与场景排版用它，别再自己写 120 / 964 这类魔数 */
       grid: this._scaledGrid(),
+      /**
+       * **主体声明**（版面守门，见 docs/LAYOUT.md）：这一段观众该看哪里。
+       * 来源两处，**时间线上的那份优先**（同一支片子里某一段想换主体时不必改场景）：
+       *   · 场景对象上的 `focus`（`export default { id, focus: 'center', render } `）；
+       *   · 时间线段上的 `focus`（`cut(shot, { focus: { x, y, w, h } })`）。
+       * 归一成绝对矩形是判据的事（`src/layout.js` 的 `resolveFocus()`），这里只做搬运。
+       * 没声明就是 `null` —— 判据因此说"没判"，不会说"通过"。
+       */
+      focus: item.focus ?? item._scene?.focus ?? null,
       params: f.params, W: this.gl.w, H: this.gl.h,
       start: item.start, end: item.end, item,
       util: U, rng: U.rng,
@@ -463,7 +472,7 @@ export class Engine {
       // `skipScene` 只给 `check` 的背景守门用（worldAudit）：只跑背景、不跑场景，
       // 这样「这一段到底铺了底没有」是可测的，而不是靠作者记得调用。
       if (skipScene) {
-        this.gl.paint = { full: 0, any: 0, lines: 0, target: rt, other: 0, markError: false };
+        this.gl.beginPaint(rt, layer);
         if (ctx.world && item.world !== false) {
           try { ctx.world.render(this.gl, rt, t, subDt); } catch { /* 记在下面统一处理 */ }
         }
@@ -479,8 +488,10 @@ export class Engine {
           this.errors.push(`[${item.id}] 共享背景渲染出错: ${fmtErr(err)}`);
         }
       }
-      // 绘制记账：这一段到底往画面里画了东西没有（"什么都没画"以前抓不到）
-      this.gl.paint = { full: 0, any: 0, lines: 0, target: rt, other: 0, markError: false };
+      // 绘制记账：这一段到底往画面里画了东西没有（"什么都没画"以前抓不到）。
+      // 同时记**文字入口**（layer = 这一段自己的 2D 图层）：版面守门要用它数"一屏几块字"，
+      // 而引擎自己的字幕层/HUD 层画在别的图层上，天然不算进这一段（见 src/layout.js）。
+      this.gl.beginPaint(rt, layer);
       // 场景级变换（§3.5）：让「一道前景」整体平移/缩放/旋转 —— 一台摄影机、视差、反向落位都靠它。
       // 每段各自持有一个对象，每帧先归零；场景必须显式调用 ctx.setXform(...) 才算数。
       ctx.xform = item._xform ?? (item._xform = { x: 0, y: 0, scale: 1, rot: 0, anchor: null, p: 0, q: 0, on: false, edge: 'clamp' });
@@ -508,7 +519,7 @@ export class Engine {
       } catch (err) {
         /**
          * 场景抛错 = **硬错误**，绝不能画一帧意思不明的纯色糊过去
-         * （`docs/IMPROVEMENTS-2.md` P0-3）。
+         * （`docs/history/IMPROVEMENTS-1-3.md` P0-3）。
          *
          * 旧行为有多贵：beast 的 outro 里 `const slot = ctx.params?.slot` 遮蔽了
          * `_kit.js` 的 `slot()` 画格子函数 → TypeError。引擎 catch 住，把整帧涂成
@@ -539,7 +550,7 @@ export class Engine {
       //   第一次 `upload()` 才 `texImage2D(SRGB8_ALPHA8)` 分配出来的，没分配过的图层
       //   采样出来是**未定义的**；某些驱动/格式组合下会把整个 rect 写成 0，
       //   于是"场景只 clear 了一个颜色、一个字都没写"的那种段整帧变黑
-      //   （诊断过程见 docs/IMPROVEMENTS-2.md P0-3 的"顺带发现"：
+      //   （诊断过程见 docs/history/IMPROVEMENTS-1-3.md P0-3 的"顺带发现"：
       //    `probe` / `ribbon` 两个纯 clear 的标定段在 check 里读数是 0.000，
       //    而 `xf`/`xa`/`xb`（都写了字）正常 —— 差别就在这）。
       //   判据用 `layer._uploaded`：场景调用 `text.upload()` 会把它置 true，
@@ -557,7 +568,7 @@ export class Engine {
         assertXform(ctx.xform, item.id, t, this.errors);
         // ⚠ 这是引擎内部的搬运，不是"这一段画了东西"：记账先摘掉（否则会污染 worldAudit）
         const keepPaint = this.gl.paint;
-        this.gl.paint = null;
+        this.gl.paint = null;   // beginPaint 的记账在这条路上同样要摘掉
         const xp = this._xformPass();
         xp.u.m.value = xformMatrix(this.gl, ctx.xform);
         xp.u.src.value = { tex: rt.tex, __tex: true };
